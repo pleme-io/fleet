@@ -111,6 +111,13 @@ enum Commands {
         yes: bool,
     },
 
+    /// Rebuild local system (auto-detects Darwin/NixOS from hostname)
+    Rebuild {
+        /// Show nix evaluation trace
+        #[arg(long)]
+        show_trace: bool,
+    },
+
     /// Open interactive SSH session to a node
     Ssh {
         /// Node name
@@ -165,9 +172,12 @@ enum FlowAction {
 }
 
 fn load_config() -> config::FleetConfig {
-    let dir = std::env::var("FLEET_FLAKE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
+    // Prefer local detection: walk up to find flake.nix
+    let dir = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| commands::rebuild::find_flake_root(&cwd).ok())
+        .or_else(|| std::env::var("FLEET_FLAKE_DIR").map(PathBuf::from).ok())
+        .unwrap_or_else(|| PathBuf::from("."));
     config::FleetConfig::load(&dir).unwrap_or_default()
 }
 
@@ -262,6 +272,10 @@ fn main() -> Result<()> {
             for (name, node) in &resolved.nodes {
                 hooks::run_post(&config, "reboot", name, node);
             }
+        }
+
+        Commands::Rebuild { show_trace } => {
+            commands::rebuild::rebuild(show_trace)?;
         }
 
         Commands::Ssh { node } => {

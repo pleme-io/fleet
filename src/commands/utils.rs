@@ -89,5 +89,12 @@ pub fn confirm(msg: &str) -> Result<bool> {
 }
 
 pub fn flake_dir() -> String {
+    // Prefer local detection: walk up to find flake.nix
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(root) = super::rebuild::find_flake_root(&cwd) {
+            return root.to_string_lossy().to_string();
+        }
+    }
+    // Fall back to env var for backwards compatibility (nix wrapper sets this)
     std::env::var("FLEET_FLAKE_DIR").unwrap_or_else(|_| ".".to_string())
 }

@@ -6,6 +6,7 @@ pub mod flow;
 pub mod info;
 pub mod ping;
 pub mod reboot;
+pub mod rebuild;
 pub mod rollback;
 pub mod ssh;
 pub mod status;
