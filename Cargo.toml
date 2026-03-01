@@ -1,10 +1,15 @@
 [package]
-name = "fleet"
+name = "pleme-fleet"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+authors = ["Pleme Team <team@pleme.io>"]
 description = "NixOS fleet lifecycle CLI with DAG workflow orchestration"
 repository = "https://github.com/pleme-io/fleet"
+homepage = "https://github.com/pleme-io/fleet"
+keywords = ["nixos", "fleet", "orchestration", "dag", "lifecycle"]
+categories = ["development-tools", "command-line-utilities"]
+exclude = ["module/", "target/", "result-*", "Cargo.nix", "flake.nix", "flake.lock"]
 
 [[bin]]
 name = "fleet"
