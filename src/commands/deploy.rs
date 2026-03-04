@@ -4,18 +4,18 @@ use std::process::Command;
 use crate::targeting::ResolvedTargets;
 use super::utils::*;
 
-pub fn run(targets: &ResolvedTargets, dry_run: bool, show_trace: bool) -> Result<()> {
+pub fn run(targets: &ResolvedTargets, dry_run: bool, show_trace: bool, skip_checks: bool) -> Result<()> {
     let flake = flake_dir();
 
     if targets.is_single() {
         let (name, _node) = &targets.nodes[0];
-        deploy_single(&flake, name, dry_run, show_trace)
+        deploy_single(&flake, name, dry_run, show_trace, skip_checks)
     } else {
         deploy_fleet(&flake, targets, dry_run, show_trace)
     }
 }
 
-fn deploy_single(flake: &str, name: &str, dry_run: bool, show_trace: bool) -> Result<()> {
+fn deploy_single(flake: &str, name: &str, dry_run: bool, show_trace: bool, skip_checks: bool) -> Result<()> {
     if dry_run {
         log_info(&format!("Dry-run deploy to {} (deploy-rs)", name));
     } else {
@@ -25,6 +25,9 @@ fn deploy_single(flake: &str, name: &str, dry_run: bool, show_trace: bool) -> Re
     let mut cmd = Command::new("deploy");
     if dry_run {
         cmd.arg("--dry-activate");
+    }
+    if skip_checks {
+        cmd.arg("--skip-checks");
     }
     cmd.arg(format!("{flake}#{name}"));
     if show_trace {

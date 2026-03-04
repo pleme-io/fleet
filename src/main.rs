@@ -37,6 +37,10 @@ enum Commands {
         /// Show nix evaluation trace
         #[arg(long)]
         show_trace: bool,
+
+        /// Skip deploy-rs flake checks
+        #[arg(long)]
+        skip_checks: bool,
     },
 
     /// Build NixOS configurations without activating
@@ -191,13 +195,14 @@ fn main() -> Result<()> {
             all,
             dry_run,
             show_trace,
+            skip_checks,
         } => {
             let reg = registry::load_registry()?;
             let resolved = targeting::resolve(&reg, &targets, all)?;
             for (name, node) in &resolved.nodes {
                 hooks::run_pre(&config, "deploy", name, node)?;
             }
-            commands::deploy::run(&resolved, dry_run, show_trace)?;
+            commands::deploy::run(&resolved, dry_run, show_trace, skip_checks)?;
             for (name, node) in &resolved.nodes {
                 hooks::run_post(&config, "deploy", name, node);
             }

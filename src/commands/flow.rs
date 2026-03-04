@@ -116,7 +116,7 @@ fn dispatch_action(
         }
         ActionDef::Deploy { show_trace, dry_run } => {
             let resolved = resolve_step_targets(registry, targets, cli_all)?;
-            super::deploy::run(&resolved, *dry_run, *show_trace)
+            super::deploy::run(&resolved, *dry_run, *show_trace, false)
         }
         ActionDef::Diff => {
             let resolved = resolve_step_targets(registry, targets, cli_all)?;
