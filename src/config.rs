@@ -11,6 +11,28 @@ pub struct FleetConfig {
     pub nodes: HashMap<String, NodeOverride>,
     pub hooks: HashMap<String, HookPair>,
     pub flows: HashMap<String, FlowDef>,
+    pub secrets: HashMap<String, SecretDef>,
+}
+
+/// A secret that can be provisioned from an external provider before commands run.
+#[derive(Debug, Deserialize)]
+pub struct SecretDef {
+    /// Provider type (currently only "onepassword" is supported)
+    pub provider: String,
+    /// Provider-specific item reference (e.g. "op://Personal/sops-age-key/notesPlain")
+    pub item: String,
+    /// Local file path to write the secret to (supports ~ expansion)
+    pub path: String,
+    /// File permission mode (octal string, default "0600")
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// Commands that trigger automatic provisioning when the file is missing
+    #[serde(default)]
+    pub provision_before: Vec<String>,
+}
+
+fn default_mode() -> String {
+    "0600".to_string()
 }
 
 #[derive(Debug, Deserialize)]

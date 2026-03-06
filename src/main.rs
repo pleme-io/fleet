@@ -8,6 +8,7 @@ mod dag;
 mod flow;
 mod hooks;
 mod registry;
+mod secrets;
 mod targeting;
 
 #[derive(Parser)]
@@ -150,6 +151,30 @@ enum Commands {
         #[command(subcommand)]
         action: FlowAction,
     },
+
+    /// Manage secrets (provision from 1Password, clean local files)
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SecretsAction {
+    /// Provision secrets from configured providers (all or by name)
+    Sync {
+        /// Secret name (provisions all if omitted)
+        name: Option<String>,
+    },
+
+    /// Remove local secret files (all or by name)
+    Clean {
+        /// Secret name (cleans all if omitted)
+        name: Option<String>,
+    },
+
+    /// List configured secrets and their status
+    List,
 }
 
 #[derive(Subcommand)]
@@ -197,6 +222,7 @@ fn main() -> Result<()> {
             show_trace,
             skip_checks,
         } => {
+            secrets::provision_for_command(&config, "deploy")?;
             let reg = registry::load_registry()?;
             let resolved = targeting::resolve(&reg, &targets, all)?;
             for (name, node) in &resolved.nodes {
@@ -280,6 +306,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Rebuild { show_trace } => {
+            secrets::provision_for_command(&config, "rebuild")?;
             commands::rebuild::rebuild(show_trace)?;
         }
 
@@ -300,6 +327,39 @@ fn main() -> Result<()> {
             let resolved = targeting::resolve(&reg, &targets, all)?;
             commands::ping::run(&resolved, &config)?;
         }
+
+        Commands::Secrets { action } => match action {
+            SecretsAction::Sync { name } => match name {
+                Some(n) => secrets::sync_secret(&config, &n)?,
+                None => secrets::sync_all(&config)?,
+            },
+            SecretsAction::Clean { name } => match name {
+                Some(n) => secrets::clean_secret(&config, &n)?,
+                None => {
+                    for secret_name in config.secrets.keys() {
+                        secrets::clean_secret(&config, secret_name)?;
+                    }
+                }
+            },
+            SecretsAction::List => {
+                if config.secrets.is_empty() {
+                    println!("No secrets configured in fleet.yaml");
+                } else {
+                    for (name, secret) in &config.secrets {
+                        let target = secrets::expand_home_pub(&secret.path);
+                        let status = if target.exists() {
+                            "present".to_string()
+                        } else {
+                            "missing".to_string()
+                        };
+                        println!(
+                            "  {} ({}) -> {} [{}]",
+                            name, secret.provider, target.display(), status
+                        );
+                    }
+                }
+            }
+        },
 
         Commands::Flow { action } => match action {
             FlowAction::List => {
