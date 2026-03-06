@@ -48,13 +48,17 @@ fn darwin_rebuild(flake_root: &Path, hostname: &str, show_trace: bool) -> Result
 
     // darwin-rebuild switch requires root for system activation.
     // Preserve HOME/USER so home-manager activates for the real user.
+    // Preserve NIX_SSL_CERT_FILE so fetchGit HTTPS calls can verify certs.
     let real_user = std::env::var("USER").unwrap_or_default();
     let real_home = std::env::var("HOME").unwrap_or_default();
+    let ssl_cert = std::env::var("NIX_SSL_CERT_FILE")
+        .unwrap_or_else(|_| "/etc/ssl/certs/ca-certificates.crt".to_string());
 
     let mut cmd = Command::new("sudo");
-    cmd.arg("--preserve-env=HOME,USER")
+    cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE")
         .env("HOME", &real_home)
         .env("USER", &real_user)
+        .env("NIX_SSL_CERT_FILE", &ssl_cert)
         .arg("darwin-rebuild")
         .arg("switch")
         .arg("--flake")
