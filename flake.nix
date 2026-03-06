@@ -13,6 +13,10 @@
       url = "github:pleme-io/substrate";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    devenv = {
+      url = "github:cachix/devenv";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
@@ -21,9 +25,10 @@
     crate2nix,
     flake-utils,
     substrate,
+    devenv,
   }:
     (import "${substrate}/lib/rust-tool-release-flake.nix" {
-      inherit nixpkgs crate2nix flake-utils;
+      inherit nixpkgs crate2nix flake-utils devenv;
     }) {
       toolName = "fleet";
       src = self;
