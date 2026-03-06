@@ -46,8 +46,17 @@ pub fn rebuild(show_trace: bool) -> Result<()> {
 fn darwin_rebuild(flake_root: &Path, hostname: &str, show_trace: bool) -> Result<()> {
     log_info(&format!("Darwin rebuild for {}...", hostname));
 
-    let mut cmd = Command::new("darwin-rebuild");
-    cmd.arg("switch")
+    // darwin-rebuild switch requires root for system activation.
+    // Preserve HOME/USER so home-manager activates for the real user.
+    let real_user = std::env::var("USER").unwrap_or_default();
+    let real_home = std::env::var("HOME").unwrap_or_default();
+
+    let mut cmd = Command::new("sudo");
+    cmd.arg("--preserve-env=HOME,USER")
+        .env("HOME", &real_home)
+        .env("USER", &real_user)
+        .arg("darwin-rebuild")
+        .arg("switch")
         .arg("--flake")
         .arg(format!(".#{}", hostname))
         .current_dir(flake_root);
