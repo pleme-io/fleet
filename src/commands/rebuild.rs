@@ -25,7 +25,7 @@ fn get_hostname() -> Result<String> {
         .context("Failed to get hostname")
 }
 
-pub fn rebuild(show_trace: bool) -> Result<()> {
+pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
     let hostname = get_hostname()?;
@@ -37,13 +37,18 @@ pub fn rebuild(show_trace: bool) -> Result<()> {
     ));
 
     match std::env::consts::OS {
-        "macos" => darwin_rebuild(&flake_root, &hostname, show_trace),
-        "linux" => nixos_rebuild(&flake_root, &hostname, show_trace),
+        "macos" => darwin_rebuild(&flake_root, &hostname, show_trace, nix_options),
+        "linux" => nixos_rebuild(&flake_root, &hostname, show_trace, nix_options),
         os => anyhow::bail!("Unsupported OS: {}", os),
     }
 }
 
-fn darwin_rebuild(flake_root: &Path, hostname: &str, show_trace: bool) -> Result<()> {
+fn darwin_rebuild(
+    flake_root: &Path,
+    hostname: &str,
+    show_trace: bool,
+    nix_options: &[String],
+) -> Result<()> {
     log_info(&format!("Darwin rebuild for {}...", hostname));
 
     // darwin-rebuild switch requires root for system activation.
@@ -71,12 +76,24 @@ fn darwin_rebuild(flake_root: &Path, hostname: &str, show_trace: bool) -> Result
         cmd.arg("--show-trace");
     }
 
+    // Forward --option key value pairs to darwin-rebuild
+    for pair in nix_options.chunks(2) {
+        if pair.len() == 2 {
+            cmd.arg("--option").arg(&pair[0]).arg(&pair[1]);
+        }
+    }
+
     run_command(&mut cmd)?;
     log_success(&format!("{} rebuilt successfully", hostname));
     Ok(())
 }
 
-fn nixos_rebuild(flake_root: &Path, hostname: &str, show_trace: bool) -> Result<()> {
+fn nixos_rebuild(
+    flake_root: &Path,
+    hostname: &str,
+    show_trace: bool,
+    nix_options: &[String],
+) -> Result<()> {
     log_info(&format!("NixOS rebuild for {}...", hostname));
 
     let mut cmd = Command::new("sudo");
@@ -89,6 +106,13 @@ fn nixos_rebuild(flake_root: &Path, hostname: &str, show_trace: bool) -> Result<
 
     if show_trace {
         cmd.arg("--show-trace");
+    }
+
+    // Forward --option key value pairs to nixos-rebuild
+    for pair in nix_options.chunks(2) {
+        if pair.len() == 2 {
+            cmd.arg("--option").arg(&pair[0]).arg(&pair[1]);
+        }
     }
 
     run_command(&mut cmd)?;

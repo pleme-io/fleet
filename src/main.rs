@@ -121,6 +121,10 @@ enum Commands {
         /// Show nix evaluation trace
         #[arg(long)]
         show_trace: bool,
+
+        /// Pass --option key value to darwin-rebuild/nixos-rebuild (repeatable)
+        #[arg(long = "nix-option", num_args = 2, value_names = ["KEY", "VALUE"], action = clap::ArgAction::Append)]
+        nix_options: Vec<String>,
     },
 
     /// Open interactive SSH session to a node
@@ -305,9 +309,12 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Rebuild { show_trace } => {
+        Commands::Rebuild {
+            show_trace,
+            nix_options,
+        } => {
             secrets::provision_for_command(&config, "rebuild")?;
-            commands::rebuild::rebuild(show_trace)?;
+            commands::rebuild::rebuild(show_trace, &nix_options)?;
         }
 
         Commands::Ssh { node } => {
