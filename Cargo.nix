@@ -39,7 +39,7 @@ rec {
   #
 
   rootCrate = rec {
-    packageId = "fleet";
+    packageId = "pleme-fleet";
 
     # Use this attribute to refer to the derivation building your root crate package.
     # You can override the features with rootCrate.build.override { features = [ "default" "feature1" ... ]; }.
@@ -55,10 +55,10 @@ rec {
   # You can override the features with
   # workspaceMembers."${crateName}".build.override { features = [ "default" "feature1" ... ]; }.
   workspaceMembers = {
-    "fleet" = rec {
-      packageId = "fleet";
+    "pleme-fleet" = rec {
+      packageId = "pleme-fleet";
       build = internal.buildRustCrateWithFeatures {
-        packageId = "fleet";
+        packageId = "pleme-fleet";
       };
 
       # Debug support which might change between releases.
@@ -379,48 +379,6 @@ rec {
         sha256 = "03swzqznragy8n0x31lqc78g2af054jwivp7lkrbrc0khz74lyl7";
 
       };
-      "fleet" = rec {
-        crateName = "fleet";
-        version = "0.1.0";
-        edition = "2021";
-        crateBin = [
-          {
-            name = "fleet";
-            path = "src/main.rs";
-            requiredFeatures = [ ];
-          }
-        ];
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./.; };
-        dependencies = [
-          {
-            name = "anyhow";
-            packageId = "anyhow";
-          }
-          {
-            name = "clap";
-            packageId = "clap";
-            features = [ "derive" "cargo" ];
-          }
-          {
-            name = "colored";
-            packageId = "colored";
-          }
-          {
-            name = "serde";
-            packageId = "serde";
-            features = [ "derive" ];
-          }
-          {
-            name = "serde_json";
-            packageId = "serde_json";
-          }
-          {
-            name = "serde_yaml_ng";
-            packageId = "serde_yaml_ng";
-          }
-        ];
-
-      };
       "hashbrown" = rec {
         crateName = "hashbrown";
         version = "0.16.1";
@@ -538,6 +496,51 @@ rec {
         features = {
         };
         resolvedDefaultFeatures = [ "default" ];
+      };
+      "pleme-fleet" = rec {
+        crateName = "pleme-fleet";
+        version = "0.1.0";
+        edition = "2021";
+        crateBin = [
+          {
+            name = "fleet";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./.; };
+        authors = [
+          "Pleme Team <team@pleme.io>"
+        ];
+        dependencies = [
+          {
+            name = "anyhow";
+            packageId = "anyhow";
+          }
+          {
+            name = "clap";
+            packageId = "clap";
+            features = [ "derive" "cargo" ];
+          }
+          {
+            name = "colored";
+            packageId = "colored";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "serde_yaml_ng";
+            packageId = "serde_yaml_ng";
+          }
+        ];
+
       };
       "proc-macro2" = rec {
         crateName = "proc-macro2";
