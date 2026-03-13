@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::utils::{log_info, log_success, run_command, run_command_output};
+use super::utils::{log_info, log_success, log_warning, run_command, run_command_output};
 
 /// Walk up from `start` to find the directory containing `flake.nix`.
 pub fn find_flake_root(start: &Path) -> Result<PathBuf> {
@@ -23,6 +23,16 @@ pub fn find_flake_root(start: &Path) -> Result<PathBuf> {
 fn get_hostname() -> Result<String> {
     run_command_output(Command::new("hostname").arg("-s"))
         .context("Failed to get hostname")
+}
+
+/// Check whether a command exists in PATH.
+fn command_exists(name: &str) -> bool {
+    Command::new("which")
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_or(false, |s| s.success())
 }
 
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
@@ -59,6 +69,42 @@ fn darwin_rebuild(
     let real_home = std::env::var("HOME").unwrap_or_default();
     let ssl_cert = std::env::var("NIX_SSL_CERT_FILE")
         .unwrap_or_else(|_| "/etc/ssl/certs/ca-certificates.crt".to_string());
+
+    // Bootstrap: on first run, darwin-rebuild isn't installed yet.
+    // Build the system configuration and activate it directly.
+    if !command_exists("darwin-rebuild") {
+        log_warning("darwin-rebuild not in PATH — bootstrapping from flake...");
+
+        let system_path = run_command_output(
+            Command::new("nix")
+                .args([
+                    "--extra-experimental-features",
+                    "nix-command flakes",
+                    "build",
+                    "--print-out-paths",
+                    "--no-link",
+                ])
+                .arg(format!(".#darwinConfigurations.{hostname}.system"))
+                .current_dir(flake_root),
+        )
+        .context("Failed to build darwin system configuration")?;
+
+        log_info("Activating system profile (bootstrap)...");
+        let activate = format!("{system_path}/activate");
+
+        let mut cmd = Command::new("sudo");
+        cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO")
+            .env("HOME", &real_home)
+            .env("USER", &real_user)
+            .env("NIX_SSL_CERT_FILE", &ssl_cert)
+            .env("GIT_SSL_CAINFO", &ssl_cert)
+            .arg(&activate)
+            .current_dir(flake_root);
+
+        run_command(&mut cmd)?;
+        log_success(&format!("{} bootstrapped successfully", hostname));
+        return Ok(());
+    }
 
     let mut cmd = Command::new("sudo");
     cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO")
