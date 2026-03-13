@@ -29,17 +29,22 @@ fn parse_mode(mode: &str) -> Result<u32> {
 }
 
 /// Provision a single secret from its provider.
-fn provision_secret(name: &str, secret: &SecretDef) -> Result<()> {
+/// `op_cmd` is the resolved path to the 1Password CLI (may be a nix store path).
+fn provision_secret(name: &str, secret: &SecretDef, op_cmd: Option<&str>) -> Result<()> {
     let target = expand_home(&secret.path);
 
     match secret.provider.as_str() {
         "onepassword" => {
+            let op = op_cmd.context(
+                "1Password CLI (op) is required but could not be found or built",
+            )?;
+
             log_info(&format!(
                 "Provisioning secret '{}' from 1Password...",
                 name
             ));
 
-            let output = Command::new("op")
+            let output = Command::new(op)
                 .arg("read")
                 .arg(&secret.item)
                 .output()
@@ -90,6 +95,10 @@ fn provision_secret(name: &str, secret: &SecretDef) -> Result<()> {
 /// Provision all secrets that are configured to run before the given command,
 /// but only if their target file does not already exist.
 pub fn provision_for_command(config: &FleetConfig, command_name: &str) -> Result<()> {
+    // Resolve `op` once (may build from nixpkgs on first run).
+    let mut op_cmd: Option<String> = None;
+    let mut op_resolved = false;
+
     for (name, secret) in &config.secrets {
         if secret
             .provision_before
@@ -101,16 +110,25 @@ pub fn provision_for_command(config: &FleetConfig, command_name: &str) -> Result
                 continue;
             }
 
-            // Check if the provider CLI is available
-            if secret.provider == "onepassword" && which_op().is_none() {
+            // Lazily resolve the op CLI (only when we actually need it)
+            if secret.provider == "onepassword" && !op_resolved {
+                op_cmd = resolve_op_cmd();
+                op_resolved = true;
+
+                if op_cmd.is_none() {
+                    log_warning("1Password CLI unavailable and could not be built — secrets will be skipped");
+                }
+            }
+
+            if secret.provider == "onepassword" && op_cmd.is_none() {
                 log_warning(&format!(
-                    "Secret '{}' needs 1Password CLI but 'op' not found on PATH — skipping",
+                    "Secret '{}' needs 1Password CLI — skipping",
                     name
                 ));
                 continue;
             }
 
-            provision_secret(name, secret)?;
+            provision_secret(name, secret, op_cmd.as_deref())?;
         }
     }
     Ok(())
@@ -137,15 +155,23 @@ pub fn clean_secret(config: &FleetConfig, name: &str) -> Result<()> {
 /// Provision a specific named secret (unconditionally, even if file exists).
 pub fn sync_secret(config: &FleetConfig, name: &str) -> Result<()> {
     match config.secrets.get(name) {
-        Some(secret) => provision_secret(name, secret),
+        Some(secret) => {
+            let op_cmd = if secret.provider == "onepassword" {
+                resolve_op_cmd()
+            } else {
+                None
+            };
+            provision_secret(name, secret, op_cmd.as_deref())
+        }
         None => bail!("No secret named '{}' in fleet.yaml", name),
     }
 }
 
 /// Provision all configured secrets (unconditionally).
 pub fn sync_all(config: &FleetConfig) -> Result<()> {
+    let op_cmd = resolve_op_cmd();
     for (name, secret) in &config.secrets {
-        provision_secret(name, secret)?;
+        provision_secret(name, secret, op_cmd.as_deref())?;
     }
     Ok(())
 }
@@ -159,4 +185,41 @@ fn which_op() -> Option<()> {
         .ok()
         .filter(|s| s.success())
         .map(|_| ())
+}
+
+/// Resolve the `op` command — returns "op" if already in PATH, otherwise
+/// builds it from nixpkgs on the fly and returns the store path binary.
+/// This handles first-run bootstrap on nodes where `op` isn't installed yet.
+fn resolve_op_cmd() -> Option<String> {
+    if which_op().is_some() {
+        return Some("op".to_string());
+    }
+
+    log_warning("1Password CLI (op) not in PATH — installing via nix...");
+
+    let output = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "build",
+            "--print-out-paths",
+            "--no-link",
+            "nixpkgs#_1password-cli",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let store_path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    let op_bin = format!("{store_path}/bin/op");
+
+    if std::path::Path::new(&op_bin).exists() {
+        log_success("1Password CLI built successfully");
+        Some(op_bin)
+    } else {
+        None
+    }
 }

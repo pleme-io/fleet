@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -35,6 +37,105 @@ fn command_exists(name: &str) -> bool {
         .map_or(false, |s| s.success())
 }
 
+/// On first run, Nix needs GitHub auth to fetch private flake inputs.
+/// If `~/.config/nix/netrc` doesn't exist but the SOPS age key does,
+/// decrypt the GitHub token from secrets.yaml and write temporary auth
+/// files so the first `nix build` can succeed. After activation,
+/// sops-nix takes over managing these files.
+fn bootstrap_nix_auth(flake_root: &Path) -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let netrc_path = PathBuf::from(&home).join(".config/nix/netrc");
+    let access_tokens_path = PathBuf::from(&home).join(".config/nix/access-tokens.conf");
+    let age_key_path = PathBuf::from(&home).join(".config/sops/age/keys.txt");
+
+    // Already have auth files — nothing to do
+    if netrc_path.exists() && access_tokens_path.exists() {
+        return Ok(());
+    }
+
+    // Need the age key to decrypt secrets
+    if !age_key_path.exists() {
+        log_warning("No SOPS age key — cannot bootstrap GitHub auth (private flake inputs may fail)");
+        return Ok(());
+    }
+
+    let secrets_yaml = flake_root.join("secrets.yaml");
+    if !secrets_yaml.exists() {
+        return Ok(());
+    }
+
+    // Resolve sops CLI — use from PATH or build from nixpkgs
+    let sops_cmd = if command_exists("sops") {
+        "sops".to_string()
+    } else {
+        log_info("sops not in PATH — building from nixpkgs...");
+        let out = run_command_output(
+            Command::new("nix")
+                .args([
+                    "--extra-experimental-features",
+                    "nix-command flakes",
+                    "build",
+                    "--print-out-paths",
+                    "--no-link",
+                    "nixpkgs#sops",
+                ]),
+        )
+        .context("Failed to build sops from nixpkgs")?;
+        format!("{out}/bin/sops")
+    };
+
+    // Decrypt just the GitHub token
+    let token_output = Command::new(&sops_cmd)
+        .args(["--decrypt", "--extract", "[\"github\"][\"ghcr-token\"]"])
+        .arg(&secrets_yaml)
+        .env("SOPS_AGE_KEY_FILE", &age_key_path)
+        .output()
+        .context("Failed to run sops")?;
+
+    if !token_output.status.success() {
+        let stderr = String::from_utf8_lossy(&token_output.stderr);
+        log_warning(&format!("Could not decrypt GitHub token: {}", stderr.trim()));
+        return Ok(());
+    }
+
+    let token = String::from_utf8(token_output.stdout)
+        .context("GitHub token is not valid UTF-8")?
+        .trim()
+        .to_string();
+
+    if token.is_empty() {
+        log_warning("Decrypted GitHub token is empty — skipping auth bootstrap");
+        return Ok(());
+    }
+
+    // Write temporary auth files
+    let nix_config_dir = PathBuf::from(&home).join(".config/nix");
+    fs::create_dir_all(&nix_config_dir)?;
+
+    if !access_tokens_path.exists() {
+        fs::write(
+            &access_tokens_path,
+            format!("access-tokens = github.com={token}\n"),
+        )?;
+        fs::set_permissions(&access_tokens_path, fs::Permissions::from_mode(0o600))?;
+        log_success("Bootstrapped ~/.config/nix/access-tokens.conf");
+    }
+
+    if !netrc_path.exists() {
+        fs::write(
+            &netrc_path,
+            format!(
+                "machine api.github.com\nlogin x-access-token\npassword {token}\n\n\
+                 machine github.com\nlogin x-access-token\npassword {token}\n"
+            ),
+        )?;
+        fs::set_permissions(&netrc_path, fs::Permissions::from_mode(0o600))?;
+        log_success("Bootstrapped ~/.config/nix/netrc");
+    }
+
+    Ok(())
+}
+
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
@@ -45,6 +146,13 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
         hostname,
         flake_root.display()
     ));
+
+    // Bootstrap: decrypt GitHub token from SOPS so Nix can fetch private inputs.
+    // Only runs when auth files are missing (first run). After activation,
+    // sops-nix manages these files permanently.
+    if let Err(e) = bootstrap_nix_auth(&flake_root) {
+        log_warning(&format!("Auth bootstrap: {e} — continuing anyway"));
+    }
 
     match std::env::consts::OS {
         "macos" => darwin_rebuild(&flake_root, &hostname, show_trace, nix_options),
