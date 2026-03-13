@@ -164,6 +164,127 @@ fn ensure_claude_code() {
     }
 }
 
+/// On first run, ensure /etc/nix/nix.custom.conf has the minimum settings
+/// needed for a successful bootstrap build:
+///   - sandbox = false (macOS blocks .app builds and xcodebuild in sandbox)
+///   - trusted-users includes the current user (so --option flags work)
+///
+/// After activation, nix-darwin manages this file permanently.
+/// This only writes if the settings are missing (idempotent).
+fn bootstrap_nix_custom_conf() -> Result<()> {
+    // Skip if nix-darwin already manages this file (darwin-rebuild exists)
+    // or if activation already ran once (.before-nix-darwin backup exists).
+    // Writing here would conflict with nix-darwin's activation check.
+    if command_exists("darwin-rebuild")
+        || PathBuf::from("/etc/nix/nix.custom.conf.before-nix-darwin").exists()
+    {
+        return Ok(());
+    }
+
+    let custom_conf = PathBuf::from("/etc/nix/nix.custom.conf");
+    let current = fs::read_to_string(&custom_conf).unwrap_or_default();
+
+    let has_sandbox = current.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("sandbox") && !t.starts_with('#')
+    });
+    let has_trusted = current.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("trusted-users") && !t.starts_with('#')
+    });
+
+    if has_sandbox && has_trusted {
+        return Ok(());
+    }
+
+    let user = std::env::var("USER").unwrap_or_default();
+    let mut additions = String::new();
+    if !has_sandbox {
+        additions.push_str("\n# Bootstrap: disable sandbox for macOS .app builds\nsandbox = false\n");
+    }
+    if !has_trusted {
+        additions.push_str(&format!(
+            "\n# Bootstrap: trust current user for --option flags\ntrusted-users = root {user}\n"
+        ));
+    }
+
+    log_info("Configuring nix daemon for bootstrap (sandbox=false, trusted-users)...");
+
+    // Write via sudo tee since /etc/nix is root-owned
+    let new_content = format!("{current}{additions}");
+    let mut cmd = Command::new("sudo");
+    cmd.args(["tee", "/etc/nix/nix.custom.conf"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null());
+    let mut child = cmd.spawn().context("Failed to run sudo tee")?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin.write_all(new_content.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("Failed to write /etc/nix/nix.custom.conf");
+    }
+
+    // Restart the nix daemon so it picks up the new settings
+    log_info("Restarting nix daemon to apply settings...");
+    let _ = Command::new("sudo")
+        .args(["launchctl", "kickstart", "-k", "system/org.nixos.nix-daemon"])
+        .status();
+    // Also try Determinate Nix daemon
+    let _ = Command::new("sudo")
+        .args([
+            "launchctl",
+            "kickstart",
+            "-k",
+            "system/systems.determinate.nix-daemon",
+        ])
+        .status();
+
+    // Brief pause for daemon restart
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    log_success("Nix daemon configured for bootstrap");
+    Ok(())
+}
+
+/// Accept the Xcode license if not yet accepted. xcodebuild refuses to
+/// run for ANY user (including nix build users) until the license is
+/// accepted system-wide via `sudo xcodebuild -license accept`.
+/// Idempotent — xcodebuild -checkFirstLaunchStatus exits 0 when done.
+fn accept_xcode_license() {
+    // Check if xcodebuild is available
+    if !command_exists("xcodebuild") {
+        return;
+    }
+
+    // Check if license is already accepted by trying a simple xcodebuild query
+    let check = Command::new("xcodebuild")
+        .arg("-license")
+        .arg("check")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match check {
+        Ok(s) if s.success() => return, // already accepted
+        _ => {}
+    }
+
+    log_info("Accepting Xcode license (required for xcodebuild)...");
+    let status = Command::new("sudo")
+        .args(["xcodebuild", "-license", "accept"])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => log_success("Xcode license accepted"),
+        _ => log_warning("Could not accept Xcode license — xcodebuild may fail"),
+    }
+}
+
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
@@ -174,6 +295,17 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
         hostname,
         flake_root.display()
     ));
+
+    // Bootstrap: ensure nix daemon has sandbox=false and trusted-users
+    // before any builds. Only writes if settings are missing (first run).
+    if std::env::consts::OS == "macos" {
+        if let Err(e) = bootstrap_nix_custom_conf() {
+            log_warning(&format!("Nix daemon config bootstrap: {e} — continuing anyway"));
+        }
+        // Accept Xcode license — xcodebuild refuses to run for any user
+        // (including nix build users) until the license is accepted.
+        accept_xcode_license();
+    }
 
     // Bootstrap: decrypt GitHub token from SOPS so Nix can fetch private inputs.
     // Only runs when auth files are missing (first run). After activation,
@@ -211,24 +343,57 @@ fn darwin_rebuild(
     let ssl_cert = std::env::var("NIX_SSL_CERT_FILE")
         .unwrap_or_else(|_| "/etc/ssl/certs/ca-certificates.crt".to_string());
 
+    // Read access-tokens from bootstrapped config so nix can fetch private inputs.
+    let access_tokens_path = PathBuf::from(&real_home).join(".config/nix/access-tokens.conf");
+    let access_tokens = if access_tokens_path.exists() {
+        fs::read_to_string(&access_tokens_path)
+            .ok()
+            .and_then(|content| {
+                content
+                    .trim()
+                    .strip_prefix("access-tokens = ")
+                    .map(|v| v.to_string())
+            })
+    } else {
+        None
+    };
+
     // Bootstrap: on first run, darwin-rebuild isn't installed yet.
     // Build the system configuration and activate it directly.
     if !command_exists("darwin-rebuild") {
         log_warning("darwin-rebuild not in PATH — bootstrapping from flake...");
 
-        let system_path = run_command_output(
-            Command::new("nix")
-                .args([
-                    "--extra-experimental-features",
-                    "nix-command flakes",
-                    "build",
-                    "--print-out-paths",
-                    "--no-link",
-                ])
-                .arg(format!(".#darwinConfigurations.{hostname}.system"))
-                .current_dir(flake_root),
-        )
-        .context("Failed to build darwin system configuration")?;
+        let mut build_cmd = Command::new("nix");
+        build_cmd
+            .args([
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "build",
+                "--print-out-paths",
+                "--no-link",
+            ])
+            .arg(format!(".#darwinConfigurations.{hostname}.system"))
+            .current_dir(flake_root);
+
+        // Disable sandbox during bootstrap — macOS blocks .app bundle
+        // creation and xcodebuild framework access inside the sandbox.
+        // After activation, nix.custom.conf sets sandbox=false permanently.
+        build_cmd.arg("--option").arg("sandbox").arg("false");
+
+        // Forward access-tokens so nix can fetch private flake inputs
+        if let Some(ref tokens) = access_tokens {
+            build_cmd.arg("--option").arg("access-tokens").arg(tokens);
+        }
+
+        // Forward user-provided nix options to the bootstrap build
+        for pair in nix_options.chunks(2) {
+            if pair.len() == 2 {
+                build_cmd.arg("--option").arg(&pair[0]).arg(&pair[1]);
+            }
+        }
+
+        let system_path = run_command_output(&mut build_cmd)
+            .context("Failed to build darwin system configuration")?;
 
         log_info("Activating system profile (bootstrap)...");
         let activate = format!("{system_path}/activate");

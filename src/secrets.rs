@@ -204,8 +204,10 @@ fn resolve_op_cmd() -> Option<String> {
             "build",
             "--print-out-paths",
             "--no-link",
+            "--impure",
             "nixpkgs#_1password-cli",
         ])
+        .env("NIXPKGS_ALLOW_UNFREE", "1")
         .output()
         .ok()?;
 
