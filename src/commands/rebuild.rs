@@ -136,6 +136,34 @@ fn bootstrap_nix_auth(flake_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install Claude Code via nix profile if not already available.
+/// Non-fatal — logs and continues if installation fails.
+fn ensure_claude_code() {
+    if command_exists("claude") {
+        return;
+    }
+
+    log_info("Claude Code not found — installing via nix profile...");
+
+    let status = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "profile",
+            "install",
+            "github:sadjow/claude-code-nix",
+        ])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => log_success("Claude Code installed"),
+        _ => log_warning("Could not install Claude Code — continuing without it"),
+    }
+}
+
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
@@ -153,6 +181,11 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     if let Err(e) = bootstrap_nix_auth(&flake_root) {
         log_warning(&format!("Auth bootstrap: {e} — continuing anyway"));
     }
+
+    // Ensure Claude Code is available for interactive debugging.
+    // On first run this installs it via nix profile so the user can
+    // use `claude` to troubleshoot any remaining bootstrap issues.
+    ensure_claude_code();
 
     match std::env::consts::OS {
         "macos" => darwin_rebuild(&flake_root, &hostname, show_trace, nix_options),
