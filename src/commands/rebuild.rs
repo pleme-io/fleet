@@ -288,18 +288,39 @@ fn accept_xcode_license() {
 /// Move /etc files that nix-darwin wants to manage but finds with
 /// "unrecognized content". This prevents the activation check from
 /// aborting. Files are preserved as .before-nix-darwin backups.
-fn prepare_etc_for_darwin() {
-    let managed_files = ["/etc/hosts", "/etc/nix/nix.custom.conf"];
+///
+/// Returns an error if any required move fails (sudo denied, etc.),
+/// so the caller can bail before attempting a doomed activation.
+fn prepare_etc_for_darwin() -> Result<()> {
+    let managed_files = [
+        "/etc/hosts",
+        "/etc/nix/nix.custom.conf",
+        "/etc/shells",
+        "/etc/bashrc",
+        "/etc/zshrc",
+    ];
     for path in &managed_files {
         let p = PathBuf::from(path);
         let backup = PathBuf::from(format!("{path}.before-nix-darwin"));
-        if p.exists() && !backup.exists() {
-            log_info(&format!("Moving {path} → {path}.before-nix-darwin (nix-darwin will manage it)"));
-            let _ = Command::new("sudo")
+        // Only move regular files (not symlinks — symlinks mean nix-darwin already manages it)
+        if p.exists() && !p.is_symlink() && !backup.exists() {
+            log_info(&format!(
+                "Moving {path} → {path}.before-nix-darwin (nix-darwin will manage it)"
+            ));
+            let status = Command::new("sudo")
                 .args(["mv", path, &format!("{path}.before-nix-darwin")])
-                .status();
+                .stdin(std::process::Stdio::inherit())
+                .status()
+                .context(format!("Failed to run sudo mv for {path}"))?;
+            if !status.success() {
+                anyhow::bail!(
+                    "Failed to move {path} → {path}.before-nix-darwin (sudo denied?). \
+                     Run manually: sudo mv {path} {path}.before-nix-darwin"
+                );
+            }
         }
     }
+    Ok(())
 }
 
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
@@ -413,7 +434,7 @@ fn darwin_rebuild(
             .context("Failed to build darwin system configuration")?;
 
         // Move /etc files that nix-darwin wants to manage before activation
-        prepare_etc_for_darwin();
+        prepare_etc_for_darwin()?;
 
         log_info("Activating system profile (bootstrap)...");
         let activate = format!("{system_path}/activate");
@@ -433,7 +454,7 @@ fn darwin_rebuild(
     }
 
     // Move /etc files that nix-darwin wants to manage before activation
-    prepare_etc_for_darwin();
+    prepare_etc_for_darwin()?;
 
     let mut cmd = Command::new("sudo");
     cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO")
