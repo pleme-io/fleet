@@ -285,6 +285,23 @@ fn accept_xcode_license() {
     }
 }
 
+/// Move /etc files that nix-darwin wants to manage but finds with
+/// "unrecognized content". This prevents the activation check from
+/// aborting. Files are preserved as .before-nix-darwin backups.
+fn prepare_etc_for_darwin() {
+    let managed_files = ["/etc/hosts", "/etc/nix/nix.custom.conf"];
+    for path in &managed_files {
+        let p = PathBuf::from(path);
+        let backup = PathBuf::from(format!("{path}.before-nix-darwin"));
+        if p.exists() && !backup.exists() {
+            log_info(&format!("Moving {path} → {path}.before-nix-darwin (nix-darwin will manage it)"));
+            let _ = Command::new("sudo")
+                .args(["mv", path, &format!("{path}.before-nix-darwin")])
+                .status();
+        }
+    }
+}
+
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
@@ -395,6 +412,9 @@ fn darwin_rebuild(
         let system_path = run_command_output(&mut build_cmd)
             .context("Failed to build darwin system configuration")?;
 
+        // Move /etc files that nix-darwin wants to manage before activation
+        prepare_etc_for_darwin();
+
         log_info("Activating system profile (bootstrap)...");
         let activate = format!("{system_path}/activate");
 
@@ -411,6 +431,9 @@ fn darwin_rebuild(
         log_success(&format!("{} bootstrapped successfully", hostname));
         return Ok(());
     }
+
+    // Move /etc files that nix-darwin wants to manage before activation
+    prepare_etc_for_darwin();
 
     let mut cmd = Command::new("sudo");
     cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO")
