@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::config::FlowDef;
 
 /// A validated flow with step indices resolved from string IDs.
+#[derive(Debug)]
 pub struct ValidatedFlow {
     /// For each step index, the list of dependency step indices.
     pub deps: Vec<Vec<usize>>,

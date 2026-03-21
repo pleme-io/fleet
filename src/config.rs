@@ -3,6 +3,22 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Pangea operation type (plan, apply, destroy, output).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum PangeaOperation {
+    Plan,
+    Apply,
+    Destroy,
+    Output,
+}
+
+/// Result of a step execution, carrying captured outputs for downstream interpolation.
+#[derive(Debug, Default, Clone)]
+pub struct StepResult {
+    pub outputs: HashMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct FleetConfig {
@@ -154,6 +170,20 @@ pub enum ActionDef {
     FlakeUpdate {
         #[serde(default)]
         inputs: Vec<String>,
+    },
+    /// Run a Pangea infrastructure operation (plan, apply, destroy, output)
+    Pangea {
+        /// Path to the .rb template file
+        file: String,
+        /// Optional template name (defaults to filename stem)
+        template: Option<String>,
+        /// Pangea namespace (e.g. "development", "production")
+        namespace: String,
+        /// Operation to perform
+        operation: PangeaOperation,
+        /// Environment variables with optional ${step_id.output_name} interpolation
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
 }
 

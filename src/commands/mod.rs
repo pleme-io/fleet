@@ -4,6 +4,7 @@ pub mod diff;
 pub mod exec;
 pub mod flow;
 pub mod info;
+pub mod pangea;
 pub mod ping;
 pub mod reboot;
 pub mod rebuild;
