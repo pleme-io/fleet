@@ -378,7 +378,8 @@ fn main() -> Result<()> {
                 all,
                 dry_run,
             } => {
-                let reg = registry::load_registry()?;
+                // Registry is optional — Pangea-only flows don't need node targets
+                let reg = registry::load_registry().unwrap_or_default();
                 commands::flow::run(&config, &reg, &name, &targets, all, dry_run)?;
             }
         },
