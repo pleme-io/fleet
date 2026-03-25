@@ -11,6 +11,7 @@ pub enum PangeaOperation {
     Apply,
     Destroy,
     Output,
+    Synth,
 }
 
 /// Result of a step execution, carrying captured outputs for downstream interpolation.
