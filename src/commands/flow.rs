@@ -322,6 +322,7 @@ fn print_execution_plan(flow_def: &crate::config::FlowDef, levels: &[Vec<usize>]
                     crate::config::PangeaOperation::Apply => "apply",
                     crate::config::PangeaOperation::Destroy => "destroy",
                     crate::config::PangeaOperation::Output => "output",
+                    crate::config::PangeaOperation::Synth => "synth",
                 };
                 println!("      pangea: {} {} --namespace {}", op_str, file, namespace);
                 if !env.is_empty() {

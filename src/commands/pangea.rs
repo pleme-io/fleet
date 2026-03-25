@@ -20,6 +20,7 @@ pub fn run(
         PangeaOperation::Apply => "apply",
         PangeaOperation::Destroy => "destroy",
         PangeaOperation::Output => "output",
+        PangeaOperation::Synth => "synth",
     };
 
     log_info(&format!(
