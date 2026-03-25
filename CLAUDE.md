@@ -97,7 +97,7 @@ flows:
           type: pangea
           file: k3s_permissions.rb
           namespace: development
-          operation: apply        # plan | apply | destroy | output
+          operation: apply        # plan | apply | destroy | output | synth
       - id: cluster
         action:
           type: pangea
@@ -130,4 +130,12 @@ Cycle detection via DFS coloring (Gray→Gray edge = cycle).
 - Edition 2021, serde_yaml_ng for YAML, serde_json for outputs
 - Node registry optional for Pangea-only flows (falls back to empty)
 - `fleet.yaml` loaded from flake root (walks up to find `flake.nix`)
+- `fleet.yaml` is always regenerated before flow execution (never stale)
 - `--dry-run` prints execution plan without running
+
+## Synth Operation
+
+The `synth` operation compiles Pangea templates to Terraform JSON without
+running `tofu plan/apply`. Useful for validating template output in CI or
+inspecting generated JSON. Added alongside plan/apply/destroy/output as a
+first-class Pangea operation.
