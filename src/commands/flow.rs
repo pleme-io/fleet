@@ -201,6 +201,30 @@ fn dispatch_action(
             run_command(&mut cmd)?;
             Ok(StepResult::default())
         }
+        ActionDef::PitrForge {
+            command,
+            tenant,
+            environment,
+            restore_time,
+            app_version,
+            config: cfg,
+            output_json,
+            skip_teardown,
+            env,
+        } => {
+            let resolved_env = resolve_step_env(env, all_outputs);
+            super::pitr_forge::run(
+                command,
+                tenant.as_deref(),
+                environment.as_deref(),
+                restore_time.as_deref(),
+                app_version.as_deref(),
+                cfg.as_deref(),
+                output_json.as_deref(),
+                *skip_teardown,
+                &resolved_env,
+            )
+        }
         ActionDef::Pangea {
             file,
             template,
@@ -296,6 +320,7 @@ fn print_execution_plan(flow_def: &crate::config::FlowDef, levels: &[Vec<usize>]
                 ActionDef::DarwinRebuild { .. } => "darwin-rebuild",
                 ActionDef::HomeManagerRebuild { .. } => "home-manager-rebuild",
                 ActionDef::FlakeUpdate { .. } => "flake-update",
+                ActionDef::PitrForge { .. } => "pitr-forge",
                 ActionDef::Pangea { .. } => "pangea",
             };
             let targets_str = if step.targets.is_empty() {
@@ -314,6 +339,24 @@ fn print_execution_plan(flow_def: &crate::config::FlowDef, levels: &[Vec<usize>]
             }
             if step.condition.is_some() {
                 println!("      has condition");
+            }
+            // Show PitrForge-specific details
+            if let ActionDef::PitrForge { command, tenant, environment, output_json, .. } = &step.action {
+                let cmd_str = match command {
+                    crate::config::PitrForgeCommand::Verify => "verify",
+                    crate::config::PitrForgeCommand::Drill => "drill",
+                    crate::config::PitrForgeCommand::Restore => "restore",
+                    crate::config::PitrForgeCommand::Status => "status",
+                    crate::config::PitrForgeCommand::Teardown => "teardown",
+                    crate::config::PitrForgeCommand::Test => "test",
+                    crate::config::PitrForgeCommand::Combine => "combine",
+                };
+                let tenant_str = tenant.as_deref().unwrap_or("-");
+                let env_str = environment.as_deref().unwrap_or("-");
+                println!("      pitr-forge: {} --tenant {} --env {}", cmd_str, tenant_str, env_str);
+                if let Some(out) = output_json {
+                    println!("      output_json: {}", out);
+                }
             }
             // Show Pangea-specific details
             if let ActionDef::Pangea { file, namespace, operation, env, .. } = &step.action {

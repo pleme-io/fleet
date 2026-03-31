@@ -3,6 +3,19 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// pitr-forge subcommand type.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum PitrForgeCommand {
+    Verify,
+    Drill,
+    Restore,
+    Status,
+    Teardown,
+    Test,
+    Combine,
+}
+
 /// Pangea operation type (plan, apply, destroy, output).
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
@@ -171,6 +184,35 @@ pub enum ActionDef {
     FlakeUpdate {
         #[serde(default)]
         inputs: Vec<String>,
+    },
+    /// Run a pitr-forge PITR drill or recovery operation
+    PitrForge {
+        /// pitr-forge subcommand (verify, drill, restore, status, teardown, test, combine)
+        command: PitrForgeCommand,
+        /// Akeyless tenant (e.g. "mte", "meu", "dbk")
+        #[serde(default)]
+        tenant: Option<String>,
+        /// Environment (e.g. "staging", "production")
+        #[serde(default)]
+        environment: Option<String>,
+        /// Restore time (UTC ISO 8601)
+        #[serde(default)]
+        restore_time: Option<String>,
+        /// App version for saas-pitr Helm chart
+        #[serde(default)]
+        app_version: Option<String>,
+        /// Path to pitr-forge YAML config
+        #[serde(default)]
+        config: Option<String>,
+        /// Path to write results JSON output
+        #[serde(default)]
+        output_json: Option<String>,
+        /// Skip teardown (leave restore environment up)
+        #[serde(default)]
+        skip_teardown: bool,
+        /// Environment variables with optional ${step_id.output_name} interpolation
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
     /// Run a Pangea infrastructure operation (plan, apply, destroy, output)
     Pangea {
