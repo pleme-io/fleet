@@ -6,6 +6,7 @@ pub mod flow;
 pub mod info;
 pub mod pangea;
 pub mod ping;
+pub mod pitr_forge;
 pub mod reboot;
 pub mod rebuild;
 pub mod rollback;
