@@ -64,9 +64,21 @@ calls `pangea plan/apply` as a subprocess. After apply, captures outputs via
 `tofu output -json` for downstream step interpolation.
 
 **When to use what:**
-- Pure IaC (templates only) → `pangea plan/apply`
-- NixOS deployment → `fleet deploy`
-- Mixed workflows (IaC + deploy) → Fleet flow with Pangea steps + deploy steps
+- **Single Pangea workspace day-to-day** → `nix run .#plan` / `.#deploy`
+  from inside `pangea-architectures/workspaces/<name>/`. This is the
+  canonical SDLC — see the `workspace-sdlc` skill or
+  `pangea-architectures/docs/workspace-sdlc.md`. Operator never types
+  `fleet`; SOPS secrets resolve through `Pangea::Secrets.resolve`
+  in the template.
+- **Multi-workspace constellation** → declarative `constellation.json`
+  (see `workspace-composition` skill).
+- **NixOS / Darwin deployment** → `fleet deploy`.
+- **Mixed cross-fleet orchestration** (build a node, plan a workspace,
+  health-check, deploy another node) → fleet flow with mixed
+  action types.
+
+In short: fleet flows are for cross-cutting orchestration. Single-
+workspace verbs always go through the workspace's own `nix run`.
 
 ## Action Types
 
