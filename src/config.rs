@@ -197,6 +197,11 @@ pub enum ActionDef {
     },
     Shell {
         command: String,
+        /// Environment variables exported into the spawned shell. Supports
+        /// the same `${secrets.<name>}` and `${step_id.output_name}`
+        /// resolution as the pangea/pitr-forge actions.
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
     /// Run `nix run .#darwin-rebuild` (for macOS nodes like cid)
     DarwinRebuild {
