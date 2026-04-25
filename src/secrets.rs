@@ -225,3 +225,69 @@ fn resolve_op_cmd() -> Option<String> {
         None
     }
 }
+
+// ── SOPS-native flow secret resolution ──────────────────────────────────
+//
+// Used by the flow runner to populate `${secrets.<name>}` references in
+// action env blocks. Decrypts on demand, caches per-flow run, never
+// writes plaintext to disk and never logs the value.
+
+/// Resolve a single key out of a SOPS-encrypted YAML/JSON file.
+///
+/// `file` is resolved relative to `base_dir` (the directory containing
+/// fleet.yaml). `key` is dotted/slash-style (`tailscale/oauth-client-id`)
+/// or already in bracketed form (`["tailscale"]["oauth-client-id"]`); we
+/// translate the former to the latter before invoking `sops`.
+pub fn resolve_sops(base_dir: &std::path::Path, file: &str, key: &str) -> Result<String> {
+    let full_path = if std::path::Path::new(file).is_absolute() {
+        std::path::PathBuf::from(file)
+    } else {
+        base_dir.join(file)
+    };
+
+    if !full_path.exists() {
+        bail!(
+            "SOPS file not found: {} (resolved from base_dir={})",
+            full_path.display(),
+            base_dir.display(),
+        );
+    }
+
+    let extract_path = if key.starts_with('[') {
+        key.to_string()
+    } else {
+        // tailscale/oauth-client-id -> ["tailscale"]["oauth-client-id"]
+        key.split('/')
+            .map(|seg| format!("[\"{}\"]", seg))
+            .collect::<String>()
+    };
+
+    let output = Command::new("sops")
+        .arg("decrypt")
+        .arg("--extract")
+        .arg(&extract_path)
+        .arg(&full_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to invoke `sops decrypt --extract {} {}` — is sops installed?",
+                extract_path,
+                full_path.display(),
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "sops decrypt failed for {} (key {}): {}",
+            full_path.display(),
+            key,
+            stderr.trim(),
+        );
+    }
+
+    // sops emits a trailing newline for scalar extractions — strip it.
+    let value = String::from_utf8(output.stdout)
+        .with_context(|| "sops output was not valid UTF-8")?;
+    Ok(value.trim_end_matches('\n').to_string())
+}

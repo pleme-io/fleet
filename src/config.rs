@@ -42,6 +42,11 @@ pub struct FleetConfig {
     pub hooks: HashMap<String, HookPair>,
     pub flows: HashMap<String, FlowDef>,
     pub secrets: HashMap<String, SecretDef>,
+    /// Directory containing fleet.yaml. Populated by `FleetConfig::load`,
+    /// used as the base for resolving relative SOPS file paths declared
+    /// on flows. Skipped at deserialization.
+    #[serde(skip)]
+    pub config_dir: std::path::PathBuf,
 }
 
 /// A secret that can be provisioned from an external provider before commands run.
@@ -132,7 +137,30 @@ pub struct HookPair {
 pub struct FlowDef {
     #[serde(default)]
     pub description: String,
+    /// Per-flow secrets resolved before any step runs. Each entry decrypts to
+    /// a string available to action `env:` blocks via `${secrets.<name>}`.
+    /// Currently only `source: sops` is supported.
+    #[serde(default)]
+    pub secrets: HashMap<String, FlowSecret>,
     pub steps: Vec<StepDef>,
+}
+
+/// A secret declared on a flow. Resolved once at flow start and cached for
+/// the entire run; the plaintext never lands on disk and never appears in
+/// fleet's stdout/stderr logs.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "source", rename_all = "kebab-case")]
+pub enum FlowSecret {
+    /// Decrypt a value out of a SOPS-encrypted YAML file via `sops decrypt`.
+    /// `file` is resolved relative to the fleet.yaml; `key` is the dotted
+    /// SOPS path (e.g. "tailscale/oauth-client-id" → ["tailscale"]["oauth-client-id"]).
+    Sops {
+        /// Path to the SOPS-encrypted file (relative to fleet.yaml's parent).
+        file: String,
+        /// SOPS key path. Slash-delimited (`a/b/c`) or already-bracketed
+        /// (`["a"]["b"]["c"]`).
+        key: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,7 +284,8 @@ impl FleetConfig {
             return Ok(Self::default());
         }
         let contents = std::fs::read_to_string(&path)?;
-        let config: FleetConfig = serde_yaml_ng::from_str(&contents)?;
+        let mut config: FleetConfig = serde_yaml_ng::from_str(&contents)?;
+        config.config_dir = dir.to_path_buf();
         Ok(config)
     }
 

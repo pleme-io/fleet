@@ -3,10 +3,11 @@ use colored::Colorize;
 use std::collections::HashMap;
 use std::process::Command;
 
-use crate::config::{ActionDef, FleetConfig, StepDef, StepResult};
+use crate::config::{ActionDef, FleetConfig, FlowSecret, StepDef, StepResult};
 use crate::dag;
 use crate::flow;
 use crate::registry::NodeRegistry;
+use crate::secrets;
 use crate::targeting;
 
 use super::utils::*;
@@ -60,6 +61,18 @@ pub fn run(
     log_info(&format!("Running flow: {} — {}", name, flow_def.description));
     println!();
 
+    // Pre-resolve flow-level secrets exactly once. Plaintext is held in
+    // memory for the flow run and never logged.
+    let resolved_secrets = if flow_def.secrets.is_empty() {
+        HashMap::new()
+    } else {
+        log_info(&format!(
+            "Resolving {} secret(s)...",
+            flow_def.secrets.len()
+        ));
+        resolve_flow_secrets(&flow_def.secrets, &config.config_dir)?
+    };
+
     // Accumulate outputs from all completed steps, keyed by step ID
     let mut all_outputs: HashMap<String, HashMap<String, serde_json::Value>> = HashMap::new();
 
@@ -97,7 +110,7 @@ pub fn run(
                 step.targets.clone()
             };
 
-            let result = dispatch_action(config, registry, step, &step_targets, cli_all, &all_outputs)?;
+            let result = dispatch_action(config, registry, step, &step_targets, cli_all, &all_outputs, &resolved_secrets)?;
 
             // Store outputs for downstream interpolation
             if !result.outputs.is_empty() {
@@ -119,6 +132,7 @@ fn dispatch_action(
     targets: &[String],
     cli_all: bool,
     all_outputs: &HashMap<String, HashMap<String, serde_json::Value>>,
+    resolved_secrets: &HashMap<String, String>,
 ) -> Result<StepResult> {
     match &step.action {
         ActionDef::Build { show_trace } => {
@@ -212,7 +226,7 @@ fn dispatch_action(
             skip_teardown,
             env,
         } => {
-            let resolved_env = resolve_step_env(env, all_outputs);
+            let resolved_env = resolve_step_env(env, all_outputs, resolved_secrets);
             super::pitr_forge::run(
                 command,
                 tenant.as_deref(),
@@ -232,8 +246,8 @@ fn dispatch_action(
             operation,
             env,
         } => {
-            // Resolve ${step_id.output_name} references in the env map
-            let resolved_env = resolve_step_env(env, all_outputs);
+            // Resolve ${step_id.output_name} and ${secrets.<name>} references
+            let resolved_env = resolve_step_env(env, all_outputs, resolved_secrets);
             super::pangea::run(
                 file,
                 template.as_deref(),
@@ -252,28 +266,55 @@ fn dispatch_action(
 fn resolve_step_env(
     env: &HashMap<String, String>,
     all_outputs: &HashMap<String, HashMap<String, serde_json::Value>>,
+    resolved_secrets: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut resolved = HashMap::new();
     for (key, value) in env {
-        resolved.insert(key.clone(), resolve_template(value, all_outputs));
+        resolved.insert(key.clone(), resolve_template(value, all_outputs, resolved_secrets));
     }
     resolved
 }
 
-/// Resolve a single template string, replacing all `${step_id.output_name}` patterns.
+/// Decrypt every secret declared on the flow before any step runs.
+/// Plaintext is held in this map for the duration of the flow run.
+fn resolve_flow_secrets(
+    flow_secrets: &HashMap<String, FlowSecret>,
+    config_dir: &std::path::Path,
+) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    for (name, secret) in flow_secrets {
+        let value = match secret {
+            FlowSecret::Sops { file, key } => {
+                secrets::resolve_sops(config_dir, file, key)
+                    .map_err(|e| anyhow::anyhow!(
+                        "secret '{}' resolution failed: {}", name, e
+                    ))?
+            }
+        };
+        out.insert(name.clone(), value);
+    }
+    Ok(out)
+}
+
+/// Resolve a single template string. Two reference forms are supported:
+///   ${step_id.output_name}   — output produced by an earlier step
+///   ${secrets.<name>}        — flow-level secret resolved at flow start
+/// Anything else evaluates to the empty string (matches existing behavior).
 fn resolve_template(
     template: &str,
     all_outputs: &HashMap<String, HashMap<String, serde_json::Value>>,
+    resolved_secrets: &HashMap<String, String>,
 ) -> String {
     let mut result = template.to_string();
-    // Find all ${...} patterns
     while let Some(start) = result.find("${") {
         let rest = &result[start + 2..];
         let Some(end) = rest.find('}') else {
             break;
         };
         let reference = &rest[..end];
-        let replacement = if let Some((step_id, output_name)) = reference.split_once('.') {
+        let replacement = if let Some(rest) = reference.strip_prefix("secrets.") {
+            resolved_secrets.get(rest).cloned().unwrap_or_default()
+        } else if let Some((step_id, output_name)) = reference.split_once('.') {
             all_outputs
                 .get(step_id)
                 .and_then(|outputs| outputs.get(output_name))
@@ -476,7 +517,7 @@ env:
         );
         all_outputs.insert("permissions".to_string(), step_outputs);
 
-        let result = resolve_template("${permissions.node_role_arn}", &all_outputs);
+        let result = resolve_template("${permissions.node_role_arn}", &all_outputs, &HashMap::new());
         assert_eq!(result, "arn:aws:iam::123:role/test");
     }
 
@@ -494,22 +535,37 @@ env:
         );
         all_outputs.insert("step1".to_string(), step_outputs);
 
-        let result = resolve_template("role=${step1.arn},profile=${step1.name}", &all_outputs);
+        let result = resolve_template("role=${step1.arn},profile=${step1.name}", &all_outputs, &HashMap::new());
         assert_eq!(result, "role=arn:123,profile=my-profile");
     }
 
     #[test]
     fn test_resolve_template_missing_output() {
         let all_outputs = HashMap::new();
-        let result = resolve_template("${missing.output}", &all_outputs);
+        let result = resolve_template("${missing.output}", &all_outputs, &HashMap::new());
         assert_eq!(result, "");
     }
 
     #[test]
     fn test_resolve_template_no_refs() {
         let all_outputs = HashMap::new();
-        let result = resolve_template("plain-value", &all_outputs);
+        let result = resolve_template("plain-value", &all_outputs, &HashMap::new());
         assert_eq!(result, "plain-value");
+    }
+
+    #[test]
+    fn test_resolve_template_secret_ref() {
+        let all_outputs = HashMap::new();
+        let mut secrets = HashMap::new();
+        secrets.insert("oauth_id".to_string(), "tskey-client-abc".to_string());
+        let result = resolve_template("${secrets.oauth_id}", &all_outputs, &secrets);
+        assert_eq!(result, "tskey-client-abc");
+    }
+
+    #[test]
+    fn test_resolve_template_secret_missing() {
+        let result = resolve_template("${secrets.does_not_exist}", &HashMap::new(), &HashMap::new());
+        assert_eq!(result, "");
     }
 
     #[test]
@@ -522,7 +578,7 @@ env:
         );
         all_outputs.insert("infra".to_string(), step_outputs);
 
-        let result = resolve_template("${infra.count}", &all_outputs);
+        let result = resolve_template("${infra.count}", &all_outputs, &HashMap::new());
         assert_eq!(result, "42");
     }
 
@@ -608,7 +664,7 @@ flows:
         );
         all_outputs.insert("step1".to_string(), step1_outputs);
 
-        let resolved = resolve_step_env(&env, &all_outputs);
+        let resolved = resolve_step_env(&env, &all_outputs, &HashMap::new());
         assert_eq!(resolved.get("ARN").unwrap(), "arn:aws:iam::123:role/node");
         assert_eq!(resolved.get("STATIC").unwrap(), "hello");
     }
