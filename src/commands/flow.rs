@@ -176,9 +176,15 @@ fn dispatch_action(
             super::exec::run(&resolved, command, config)?;
             Ok(StepResult::default())
         }
-        ActionDef::Shell { command } => {
+        ActionDef::Shell { command, env } => {
             log_info(&format!("Running: {}", command));
-            run_command(&mut Command::new("sh").arg("-c").arg(command))?;
+            let resolved_env = resolve_step_env(env, all_outputs, resolved_secrets);
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(command);
+            for (k, v) in &resolved_env {
+                cmd.env(k, v);
+            }
+            run_command(&mut cmd)?;
             Ok(StepResult::default())
         }
         ActionDef::DarwinRebuild { show_trace } => {
