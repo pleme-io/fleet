@@ -480,6 +480,7 @@ fn darwin_rebuild(
     }
 
     run_command(&mut cmd)?;
+    post_rebuild_cleanup();
     log_success(&format!("{} rebuilt successfully", hostname));
     Ok(())
 }
@@ -512,6 +513,39 @@ fn nixos_rebuild(
     }
 
     run_command(&mut cmd)?;
+    post_rebuild_cleanup();
     log_success(&format!("{} rebuilt successfully", hostname));
     Ok(())
+}
+
+/// Best-effort post-rebuild cleanup. Runs `seibi nix-gc --keep-days 14`
+/// after a successful switch so stale generations don't accumulate.
+///
+/// Skipped silently when:
+///   - `seibi` is not in PATH (e.g., bootstrap before the home-manager
+///     profile installs it),
+///   - `FLEET_REBUILD_CLEANUP=0` is set in the environment,
+///   - any of the spawn / wait steps fails (warned, not propagated —
+///     the rebuild already succeeded).
+fn post_rebuild_cleanup() {
+    if std::env::var("FLEET_REBUILD_CLEANUP").is_ok_and(|v| v == "0") {
+        return;
+    }
+    if !command_exists("seibi") {
+        return;
+    }
+
+    log_info("post-rebuild: seibi nix-gc --keep-days 14");
+    let status = Command::new("seibi")
+        .args(["nix-gc", "--keep-days", "14"])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => log_success("post-rebuild nix-gc complete"),
+        Ok(s) => log_warning(&format!(
+            "post-rebuild nix-gc exited non-zero: {:?}",
+            s.code()
+        )),
+        Err(e) => log_warning(&format!("post-rebuild nix-gc failed to spawn: {e}")),
+    }
 }
