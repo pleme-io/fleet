@@ -357,11 +357,129 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     // use `claude` to troubleshoot any remaining bootstrap issues.
     ensure_claude_code();
 
+    // Auto-regenerate stale Cargo.build-spec.json across the pleme-io
+    // workspace before invoking nix. Every cloned repo with a
+    // `Cargo.toml` + `Cargo.lock` gets its spec re-emitted by gen, so
+    // any drift between the spec and the lockfile (new deps added,
+    // new gen-cargo emission fields like `links` / `build_rust_crate_args`,
+    // or new derive macros pulled in via Cargo.toml that the spec
+    // doesn't reflect) is silently corrected before the substrate
+    // consumes them via `lockfile-builder`.
+    //
+    // Idempotent: regenerating an already-current spec rewrites it
+    // byte-equal, so the cost is one parse + emit per repo and zero
+    // git churn unless an actual change exists.
+    //
+    // Opt-out: set FLEET_REBUILD_SKIP_SPEC_SWEEP=1 to bypass (for the
+    // rare case where a repo's Cargo.toml is intentionally drifted
+    // from its spec — e.g. mid-WIP).
+    if std::env::var("FLEET_REBUILD_SKIP_SPEC_SWEEP").is_err() {
+        if let Err(e) = sweep_pleme_io_specs() {
+            log_warning(&format!(
+                "spec sweep: {e} — continuing anyway (a stale spec may surface as a downstream build error)"
+            ));
+        }
+    }
+
     match std::env::consts::OS {
         "macos" => darwin_rebuild(&flake_root, &hostname, show_trace, nix_options),
         "linux" => nixos_rebuild(&flake_root, &hostname, show_trace, nix_options),
         os => anyhow::bail!("Unsupported OS: {}", os),
     }
+}
+
+/// Resolve the pleme-io workspace root. Tries, in order:
+///   1. `$PLEME_IO_WORKSPACE` env var.
+///   2. `$HOME/code/github/pleme-io` (the canonical convention).
+///
+/// Returns `None` if neither resolves to an existing directory.
+fn pleme_io_workspace() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("PLEME_IO_WORKSPACE") {
+        let path = PathBuf::from(p);
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    let canonical = PathBuf::from(home).join("code/github/pleme-io");
+    if canonical.is_dir() {
+        return Some(canonical);
+    }
+    None
+}
+
+/// Best-effort spec staleness sweep. For every clone of a pleme-io
+/// repo under the workspace root that has both `Cargo.toml` and
+/// `Cargo.lock`, regenerate `Cargo.build-spec.json` via `gen build`.
+///
+/// `gen` resolution order:
+///   1. `gen` on PATH.
+///   2. `$HOME/code/github/pleme-io/gen/target/release/gen` (the
+///      developer-build of gen — pleme-io's monorepo convention).
+///
+/// If `gen` isn't available anywhere, the sweep is a no-op + logs
+/// a warning. This makes the rebuild safe to run on machines that
+/// don't yet have gen-cargo installed (e.g. fresh bootstrap).
+fn sweep_pleme_io_specs() -> Result<()> {
+    let workspace = match pleme_io_workspace() {
+        Some(p) => p,
+        None => {
+            log_info("spec sweep: no pleme-io workspace found — skipping");
+            return Ok(());
+        }
+    };
+
+    // Resolve the gen binary.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dev_gen = PathBuf::from(&home).join("code/github/pleme-io/gen/target/release/gen");
+    let gen_cmd: PathBuf = if command_exists("gen") {
+        PathBuf::from("gen")
+    } else if dev_gen.is_file() {
+        dev_gen
+    } else {
+        log_warning(
+            "spec sweep: `gen` not on PATH and gen/target/release/gen not built — skipping. \
+             Stale specs may surface as downstream build errors.",
+        );
+        return Ok(());
+    };
+
+    log_info(&format!(
+        "spec sweep: regenerating Cargo.build-spec.json across {} (gen: {})",
+        workspace.display(),
+        gen_cmd.display()
+    ));
+
+    // `gen fleet-sweep <workspace> --write` regenerates every spec
+    // in one pass and emits a typed JSON summary on stdout. We don't
+    // parse it here — the sweep is best-effort and the next
+    // substrate consumption either succeeds (drift was corrected) or
+    // surfaces the same error as before (in which case the operator
+    // can drill into the per-repo log).
+    let status = Command::new(&gen_cmd)
+        .args(["fleet-sweep"])
+        .arg(&workspace)
+        .arg("--write")
+        .stdout(std::process::Stdio::null()) // suppress the JSON summary
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .with_context(|| {
+            format!(
+                "Failed to run `{} fleet-sweep {} --write`",
+                gen_cmd.display(),
+                workspace.display()
+            )
+        })?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "`{} fleet-sweep` exited with status {} — at least one repo's spec could not be regenerated",
+            gen_cmd.display(),
+            status
+        );
+    }
+    log_success("spec sweep: fleet-wide regeneration complete");
+    Ok(())
 }
 
 fn darwin_rebuild(
