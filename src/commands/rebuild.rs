@@ -231,15 +231,9 @@ fn bootstrap_nix_custom_conf() -> Result<()> {
     let _ = Command::new("sudo")
         .args(["launchctl", "kickstart", "-k", "system/org.nixos.nix-daemon"])
         .status();
-    // Also try Determinate Nix daemon
-    let _ = Command::new("sudo")
-        .args([
-            "launchctl",
-            "kickstart",
-            "-k",
-            "system/systems.determinate.nix-daemon",
-        ])
-        .status();
+    // (Determinate's systems.determinate.nix-daemon was removed in the
+    // Determinate→nix-darwin migration; kickstarting it just printed a benign
+    // "Could not find service" — dropped.)
 
     // Brief pause for daemon restart
     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -327,6 +321,23 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
     let hostname = get_hostname()?;
+
+    // PATH-harden (macOS): `darwin-rebuild` lives ONLY in
+    // /run/current-system/sw/bin. A calling shell that lacks it on PATH — one
+    // started before the first activation, or whose /etc/static was transiently
+    // broken — makes `which darwin-rebuild` fail, wrongly driving the first-run
+    // BOOTSTRAP path on a fully-configured system (which re-writes
+    // /etc/nix/nix.custom.conf and runs a buffered full build that looks hung).
+    // Prepend the canonical system + per-user profile bins so darwin-rebuild /
+    // nix / sudo always resolve, regardless of the caller's environment.
+    if std::env::consts::OS == "macos" {
+        let user = std::env::var("USER").unwrap_or_default();
+        let prefix = format!(
+            "/run/current-system/sw/bin:/etc/profiles/per-user/{user}/bin:/nix/var/nix/profiles/default/bin"
+        );
+        let existing = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{prefix}:{existing}"));
+    }
 
     log_info(&format!(
         "Rebuilding {} (flake at {})",
