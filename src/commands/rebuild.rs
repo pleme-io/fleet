@@ -479,6 +479,49 @@ fn darwin_rebuild(
         return Ok(());
     }
 
+    // L2 e2e rebuild gate (mado/docs/INTEGRATION-TESTING.md §L2): before
+    // switching, drive the candidate closure's own `mado e2e` smoke matrix —
+    // the only layer that catches deployment wiring (the follows-downgrade
+    // class: cargo artifacts green while the deployed closure ships a stale
+    // binary; incident 2026-06-10). The flake app resolves mado + frostmourne
+    // from THIS flake's pins, i.e. exactly what `darwin-rebuild switch` is
+    // about to deploy. Graceful: skipped when the flake has no `e2e-mado`
+    // app (non-terminal fleet nodes) or via FLEET_SKIP_E2E_GATE=1 (break-
+    // glass; the skip is loud either way).
+    if std::env::var("FLEET_SKIP_E2E_GATE").map_or(true, |v| v != "1") {
+        let system = if cfg!(target_arch = "aarch64") {
+            "aarch64-darwin"
+        } else {
+            "x86_64-darwin"
+        };
+        let app_attr = format!(".#apps.{system}.e2e-mado.program");
+        let has_app = Command::new("nix")
+            .args(["eval", "--raw", &app_attr])
+            .current_dir(flake_root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_or(false, |s| s.success());
+        if has_app {
+            log_info("Running e2e gate against the candidate closure (.#e2e-mado)...");
+            let status = Command::new("nix")
+                .args(["run", ".#e2e-mado"])
+                .current_dir(flake_root)
+                .status()
+                .context("Failed to launch the e2e gate")?;
+            if !status.success() {
+                anyhow::bail!(
+                    "e2e gate FAILED — the candidate closure's mado/frostmourne smoke matrix                      did not pass; refusing to switch. Inspect with `nix run .#e2e-mado`;                      break-glass override: FLEET_SKIP_E2E_GATE=1 (document why)."
+                );
+            }
+            log_success("e2e gate passed — candidate closure verified interactive");
+        } else {
+            log_info("e2e gate: no .#e2e-mado app in this flake — skipped");
+        }
+    } else {
+        log_warning("e2e gate SKIPPED via FLEET_SKIP_E2E_GATE=1");
+    }
+
     // Move /etc files that nix-darwin wants to manage before activation
     prepare_etc_for_darwin()?;
 
