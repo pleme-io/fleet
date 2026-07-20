@@ -1,10 +1,47 @@
 use anyhow::{Context, Result};
-use std::fs;
+use fs4::fs_std::FileExt;
+use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::utils::{log_info, log_success, log_warning, run_command, run_command_output};
+
+/// Serializes concurrent `fleet rebuild` invocations against each other.
+///
+/// Confirmed live (2026-07-19): two overlapping rebuilds raced on
+/// sops-nix's `/run/secrets.d/<generation>/` directories — the second
+/// activation's generation-cleanup deleted a path the first activation's
+/// "request units to restart" step was still mid-read on:
+/// `sops-install-secrets: cannot request units to restart: open
+/// /run/secrets.d/22/automation/ssh/private-key: no such file or
+/// directory`, aborting the whole activation with exit code 1 even
+/// though the secret itself was written correctly. darwin-rebuild/
+/// nixos-rebuild activation has no serialization of its own against
+/// concurrent invocations; this is the load-bearing fix rather than a
+/// retry-and-hope. An advisory `flock` (not a PID file — no self-race
+/// on stale/reused PIDs) held for the entire `rebuild()` call means a
+/// second invocation blocks until the first finishes instead of racing
+/// its activation state.
+fn acquire_rebuild_lock() -> Result<File> {
+    acquire_lock_at(&std::env::temp_dir().join("fleet-rebuild.lock"))
+}
+
+/// `acquire_rebuild_lock`'s path-parameterized core — split out so tests
+/// can exercise real flock contention against a throwaway path instead of
+/// the shared `/tmp/fleet-rebuild.lock` every real invocation uses.
+fn acquire_lock_at(lock_path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(lock_path)
+        .with_context(|| format!("failed to open rebuild lock file at {}", lock_path.display()))?;
+    if FileExt::try_lock_exclusive(&file).is_err() {
+        log_info("Another rebuild is already in progress — waiting for it to finish...");
+        FileExt::lock_exclusive(&file).context("failed to acquire rebuild lock")?;
+    }
+    Ok(file)
+}
 
 /// Walk up from `start` to find the directory containing `flake.nix`.
 pub fn find_flake_root(start: &Path) -> Result<PathBuf> {
@@ -318,6 +355,11 @@ fn prepare_etc_for_darwin() -> Result<()> {
 }
 
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
+    // Held for the whole call (released on any return path, including
+    // early `?` exits and panics, via Drop) — see acquire_rebuild_lock's
+    // doc comment for the concrete failure this prevents.
+    let _rebuild_lock = acquire_rebuild_lock()?;
+
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
     let hostname = get_hostname()?;
@@ -616,5 +658,62 @@ fn post_rebuild_cleanup() {
             s.code()
         )),
         Err(e) => log_warning(&format!("post-rebuild nix-gc failed to spawn: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod rebuild_lock_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    fn fresh_lock_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("fleet-rebuild-test-{name}-{}.lock", std::process::id()))
+    }
+
+    #[test]
+    fn second_acquire_blocks_until_first_is_dropped() {
+        // The exact scenario that caused the live sops-nix race: two
+        // `fleet rebuild` invocations overlapping. This proves the second
+        // one now WAITS instead of proceeding concurrently.
+        let path = fresh_lock_path("blocks");
+        let first = acquire_lock_at(&path).expect("first acquire");
+
+        let (tx, rx) = mpsc::channel();
+        let path_clone = path.clone();
+        let handle = thread::spawn(move || {
+            tx.send(()).unwrap(); // signal "about to block on acquire"
+            acquire_lock_at(&path_clone).expect("second acquire");
+            "acquired".to_string()
+        });
+
+        rx.recv().unwrap();
+        // Give the spawned thread a moment to actually reach the blocking
+        // flock call before we drop the first lock — best-effort, not
+        // load-bearing for correctness (if the thread is slower, the
+        // assertion below still holds; this just makes the race window
+        // realistic instead of vacuous).
+        thread::sleep(Duration::from_millis(50));
+
+        drop(first);
+        let result = handle.join().expect("thread panicked");
+        assert_eq!(result, "acquired");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lock_is_reentrant_across_sequential_acquisitions() {
+        // Not concurrent — just confirms a dropped lock genuinely
+        // releases, so back-to-back rebuilds (the common case) never
+        // deadlock against their own prior run.
+        let path = fresh_lock_path("sequential");
+        let first = acquire_lock_at(&path).expect("first acquire");
+        drop(first);
+        let second = acquire_lock_at(&path).expect("second acquire after drop");
+        drop(second);
+
+        let _ = fs::remove_file(&path);
     }
 }
