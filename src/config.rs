@@ -222,7 +222,9 @@ pub enum ActionDef {
     PitrForge {
         /// pitr-forge subcommand (verify, drill, restore, status, teardown, test, combine)
         command: PitrForgeCommand,
-        /// Akeyless tenant (e.g. "mte", "meu", "dbk")
+        /// Akeyless tenant identifier (a short per-tenant code supplied by
+        /// the operator; deliberately not enumerated here — real tenant codes
+        /// are customer-internal and this repo is public)
         #[serde(default)]
         tenant: Option<String>,
         /// Environment (e.g. "staging", "production")
