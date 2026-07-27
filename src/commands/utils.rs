@@ -65,7 +65,7 @@ pub fn rebuild_timeout() -> Option<Duration> {
 /// forever.
 ///
 /// WHY THIS EXISTS (ryn, 2026-07-26): `darwin-rebuild switch` sat for 27
-/// minutes at 0.0% CPU with no builder children and its GitHub sockets in
+/// minutes with NO log progress, no builder children, and its GitHub sockets in
 /// CLOSED state. nix ≥2.19 fetches git flake inputs IN-PROCESS via libgit2,
 /// and a libgit2 fetch honours none of nix's download settings —
 /// `connect-timeout`, `stalled-download-timeout` and `download-attempts` were
@@ -131,9 +131,14 @@ pub fn run_command_timed(cmd: &mut Command, timeout: Option<Duration>) -> Result
                  connect-timeout / stalled-download-timeout / download-attempts, so a\n\
                  dropped connection parks forever instead of erroring.\n\
                  \n\
-                 Confirm before retrying — a wedged build sits at 0.0% CPU with no\n\
-                 builder children:\n\
-                   ps -o pid,%cpu,command -p $(pgrep -f 'darwinConfigurations.*system')\n\
+                 CONFIRM before retrying. The signal is whether the BUILD LOG is\n\
+                 still advancing — NOT cpu%. The `nix build` client sits near 0%%\n\
+                 CPU even on a perfectly healthy build, because the nix-daemon does\n\
+                 the work in separate processes:\n\
+                   a=$(wc -l < <logfile>); sleep 30; b=$(wc -l < <logfile>); echo $((b-a))\n\
+                 Non-zero means it is building and you should raise the ceiling.\n\
+                 Zero, plus no builder children, means it is genuinely wedged:\n\
+                   pgrep -P $(pgrep -x nix-daemon | head -1) | wc -l\n\
                  \n\
                  If the build is genuinely this long, raise or disable the ceiling:\n\
                    FLEET_REBUILD_TIMEOUT_SECS=10800 fleet rebuild   # 3h\n\
@@ -294,6 +299,28 @@ mod timeout_tests {
         let msg = format!("{err}");
         assert!(msg.contains("was killed"), "error must say it killed the process: {msg}");
         assert!(msg.contains("FLEET_REBUILD_TIMEOUT_SECS"), "error must say how to raise it");
+    }
+
+    /// The bail text must point at the signal that actually discriminates.
+    ///
+    /// The first version told the reader to check %cpu. That advice is WRONG:
+    /// the `nix build` client sits near 0% CPU on a perfectly healthy build
+    /// because the nix-daemon builds in separate processes. Verified live —
+    /// a monitor sampled cpu=0.0 for 30 straight minutes on a build that was
+    /// producing derivations the whole time. Following that guidance would
+    /// make someone kill a working rebuild.
+    #[test]
+    fn the_bail_text_names_log_progress_not_cpu() {
+        let mut c = Command::new("sleep");
+        c.arg("600");
+        let err = run_command_timed(&mut c, Some(Duration::from_secs(2)))
+            .expect_err("must fail");
+        let msg = format!("{err}");
+        assert!(msg.contains("wc -l"), "must give the log-progress check: {msg}");
+        assert!(
+            msg.contains("NOT cpu%"),
+            "must explicitly warn cpu% is not the signal: {msg}"
+        );
     }
 
     #[test]
