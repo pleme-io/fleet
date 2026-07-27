@@ -5,7 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::utils::{log_info, log_success, log_warning, run_command, run_command_output};
+use super::utils::{
+    log_info, log_success, log_warning, rebuild_timeout, run_command, run_command_output,
+    run_command_timed,
+};
 
 /// Serializes concurrent `fleet rebuild` invocations against each other.
 ///
@@ -590,7 +593,7 @@ fn darwin_rebuild(
         }
     }
 
-    run_command(&mut cmd)?;
+    run_command_timed(&mut cmd, rebuild_timeout())?;
     post_rebuild_cleanup();
     log_success(&format!("{} rebuilt successfully", hostname));
     Ok(())
@@ -623,7 +626,7 @@ fn nixos_rebuild(
         }
     }
 
-    run_command(&mut cmd)?;
+    run_command_timed(&mut cmd, rebuild_timeout())?;
     post_rebuild_cleanup();
     log_success(&format!("{} rebuilt successfully", hostname));
     Ok(())
