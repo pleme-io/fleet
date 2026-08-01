@@ -1,6 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "cargo_lock_sha256": "5a5274fa1c763368144dad6cee329e1aaa12d4284b538056cb02fea5c4c7dc04",
+  "manifest_sha256": {
+    "Cargo.toml": "d7af14351c9f17f0a84b60703c71af07c0485a26573e7c77e0521258c7e7d147"
+  },
   "target_resolves": {
     "base": {
       "anstream-1.0.0": {
