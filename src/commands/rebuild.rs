@@ -429,6 +429,33 @@ fn gitops_verdict(v: &serde_json::Value) -> GitopsVerdict {
     let kind = v["head"]["outcome"]["kind"].as_str().unwrap_or("unknown");
     let last_activated = last_ok.map_or_else(|| "never".to_owned(), short_rev);
 
+    // ── ★ "NEVER DEPLOYED" IS NOT "CONVERGED" ────────────────────────────
+    // An empty chain has a zero failure streak, so a naive `streak == 0`
+    // reads a loop that has NEVER deployed anything as healthy. That is the
+    // precise bug this whole feature exists to kill — silence scoring as
+    // success — and it showed up here first: cid, freshly migrated onto the
+    // daemon engine, reported "converged (last activated never)" while its
+    // receipt chain was literally empty. Absence of failure is not evidence
+    // of convergence; only an activation is.
+    // Fires ONLY on a chain we can positively see is empty: `receipts` is
+    // present and zero. Two cases must NOT land here — a status document we
+    // could not parse (no `receipts` key ⇒ stay quiet, never cry wolf), and
+    // a chain that is actively failing (streak > 0 ⇒ report the streak,
+    // which is the more useful number). Both were caught by existing tests
+    // when this branch was first written too broadly.
+    if last_ok.is_none() && v["receipts"].as_u64() == Some(0) {
+        return GitopsVerdict::Degraded {
+            headline: "gitops: NO DEPLOY RECORDED — this loop has never converged".to_owned(),
+            detail: format!(
+                "    receipts       : {} (chain has no activation)\n    \
+                 note           : expected on a freshly-enrolled node; \
+                 investigate if it persists past one poll interval\n    \
+                 detail         : sentinela --config {GITOPS_CONFIG} status\n",
+                v["receipts"].as_u64().unwrap_or(0)
+            ),
+        };
+    }
+
     if streak == 0 && verified {
         return GitopsVerdict::Converged(format!("gitops: converged (last activated {last_activated})"));
     }
@@ -883,6 +910,26 @@ mod gitops_verdict_tests {
             panic!("an unverifiable chain must never read as converged");
         };
         assert!(detail.contains("FAILED VERIFICATION"), "{detail}");
+    }
+
+    #[test]
+    fn an_empty_chain_is_never_reported_as_converged() {
+        // cid, freshly migrated onto the daemon engine, produced exactly
+        // this: zero receipts, zero failures, no activation. A naive
+        // `streak == 0` check called it converged -- silence scoring as
+        // success, the bug this whole feature exists to kill.
+        let v = json!({
+            "consecutive_failures": 0,
+            "chain_verified": true,
+            "last_activated_rev": serde_json::Value::Null,
+            "receipts": 0,
+            "head": serde_json::Value::Null,
+        });
+        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v) else {
+            panic!("a chain with no activation must never read as converged");
+        };
+        assert!(headline.contains("NO DEPLOY RECORDED"), "{headline}");
+        assert!(detail.contains("no activation"), "{detail}");
     }
 
     #[test]
