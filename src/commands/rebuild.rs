@@ -357,6 +357,108 @@ fn prepare_etc_for_darwin() -> Result<()> {
     Ok(())
 }
 
+/// Where the gitops daemon's typed config lives; `sentinela` needs it to
+/// find the receipt chain. Absent on any host not running the loop.
+const GITOPS_CONFIG: &str = "/etc/pleme-gitops/config.yaml";
+
+/// Print the gitops reconciler's verdict before we start rebuilding.
+///
+/// ── ★ WHY THIS IS HERE AND NOT IN A LOG ─────────────────────────────────
+/// The daemon already recorded everything: an append-only BLAKE3 chain with
+/// a typed outcome per tick, and a `sentinela status` that prints it. It
+/// still failed **4136 consecutive ticks over 27.9 days** on ryn
+/// (2026-07-04 -> 2026-08-01, MEASURED from that chain: 4136 `failed`, 1
+/// `activated`) without anyone noticing — because the only surfaces
+/// carrying the bad news were a root-owned log nobody tails and a binary
+/// that was not on PATH.
+///
+/// Silence is the failure mode. A reconciler that has not converged in a
+/// month looks exactly like one with nothing to do: no output either way.
+/// So the verdict goes where the operator ALREADY looks — the top of every
+/// `fleet rebuild` — instead of somewhere they would have to think to check.
+///
+/// Deliberately advisory: never returns an error and never blocks a
+/// rebuild. A host with no daemon, no `sentinela` on PATH, or an
+/// unparseable status simply prints nothing. The rebuild is often the very
+/// thing being run to REPAIR a broken loop, so this must not stand in
+/// front of it.
+fn report_gitops_health() {
+    if !Path::new(GITOPS_CONFIG).exists() {
+        return; // not a gitops host
+    }
+    let out = match Command::new("sentinela")
+        .args(["--config", GITOPS_CONFIG, "status"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        // Binary absent (pre-adoption generation) or status failed — stay
+        // quiet rather than cry wolf about a loop we cannot read.
+        _ => return,
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out) else {
+        return;
+    };
+    match gitops_verdict(&v) {
+        GitopsVerdict::Converged(line) => log_info(&line),
+        GitopsVerdict::Degraded { headline, detail } => {
+            log_warning(&headline);
+            print!("{detail}");
+        }
+    }
+}
+
+/// The rendered verdict, split from the IO so both arms are testable.
+#[derive(Debug, PartialEq, Eq)]
+enum GitopsVerdict {
+    Converged(String),
+    Degraded { headline: String, detail: String },
+}
+
+/// Turn a `sentinela status` JSON document into an operator-facing verdict.
+///
+/// Pure: no IO, no process spawn — so the degraded arm can be proven
+/// against a known-bad document instead of only ever being seen in an
+/// incident. Unknown/missing fields read as HEALTHY on purpose: a status
+/// shape we cannot parse must not manufacture a false alarm, since the
+/// only thing worse than a silent reconciler is one that cries wolf until
+/// the operator learns to scroll past it.
+fn gitops_verdict(v: &serde_json::Value) -> GitopsVerdict {
+    let streak = v["consecutive_failures"].as_u64().unwrap_or(0);
+    let verified = v["chain_verified"].as_bool().unwrap_or(true);
+    let last_ok = v["last_activated_rev"].as_str();
+    let kind = v["head"]["outcome"]["kind"].as_str().unwrap_or("unknown");
+    let last_activated = last_ok.map_or_else(|| "never".to_owned(), short_rev);
+
+    if streak == 0 && verified {
+        return GitopsVerdict::Converged(format!("gitops: converged (last activated {last_activated})"));
+    }
+
+    // Say how LONG it has been wrong, not merely that it is wrong —
+    // "failed" invites a shrug, "4136 consecutive" does not.
+    let mut detail = String::new();
+    detail.push_str(&format!("    head receipt   : {kind} ({streak} consecutive)\n"));
+    detail.push_str(&format!("    last activated : {last_activated}\n"));
+    if !verified {
+        detail.push_str("    chain          : FAILED VERIFICATION (truncated or reordered)\n");
+    }
+    if let Some(err) = v["head"]["outcome"]["error"].as_str() {
+        // First line only; the full text stays in the chain.
+        let head_line = err.lines().next().unwrap_or(err);
+        detail.push_str(&format!("    last error     : {head_line}\n"));
+    }
+    detail.push_str(&format!("    detail         : sentinela --config {GITOPS_CONFIG} status\n"));
+
+    GitopsVerdict::Degraded {
+        headline: "gitops: DEGRADED — the node is not tracking the branch".to_owned(),
+        detail,
+    }
+}
+
+/// Short-form a 40-char rev for display, leaving anything else untouched.
+fn short_rev(rev: &str) -> String {
+    rev.get(..7).unwrap_or(rev).to_owned()
+}
+
 pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     // Held for the whole call (released on any return path, including
     // early `?` exits and panics, via Drop) — see acquire_rebuild_lock's
@@ -389,6 +491,8 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
         hostname,
         flake_root.display()
     ));
+
+    report_gitops_health();
 
     // Bootstrap: ensure nix daemon has sandbox=false and trusted-users
     // before any builds. Only writes if settings are missing (first run).
@@ -718,5 +822,77 @@ mod rebuild_lock_tests {
         drop(second);
 
         let _ = fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod gitops_verdict_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn converged_chain_reports_the_last_activated_rev() {
+        let v = json!({
+            "consecutive_failures": 0,
+            "chain_verified": true,
+            "last_activated_rev": "da42c8f8d082453e8ad303c55aacbebca1420336",
+            "head": { "outcome": { "kind": "activated", "generation": 1215 } },
+        });
+        assert_eq!(
+            gitops_verdict(&v),
+            GitopsVerdict::Converged("gitops: converged (last activated da42c8f)".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_ryn_outage_would_have_been_visible_on_every_rebuild() {
+        // The real shape of the 27.9-day silent failure this exists to
+        // catch: 4136 consecutive failed ticks, never once activated.
+        let v = json!({
+            "consecutive_failures": 4136,
+            "chain_verified": true,
+            "last_activated_rev": serde_json::Value::Null,
+            "head": { "outcome": {
+                "kind": "failed",
+                "error": "build failed: building the system configuration...\nerror: creating symlink '/result.tmp': Read-only file system",
+            } },
+        });
+        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v) else {
+            panic!("a 4136-failure streak must not read as converged");
+        };
+        assert!(headline.contains("DEGRADED"));
+        assert!(detail.contains("failed (4136 consecutive)"), "{detail}");
+        assert!(detail.contains("last activated : never"), "{detail}");
+        // Only the first line of a multi-line nix error, or the block
+        // becomes a wall of text nobody reads.
+        assert!(detail.contains("last error     : build failed"), "{detail}");
+        assert!(!detail.contains("Read-only file system"), "{detail}");
+    }
+
+    #[test]
+    fn a_broken_chain_is_degraded_even_with_no_failure_streak() {
+        // Tamper-evidence is the whole point of the BLAKE3 chain: a
+        // verification failure must not be masked by a healthy streak.
+        let v = json!({
+            "consecutive_failures": 0,
+            "chain_verified": false,
+            "last_activated_rev": "0123456789abcdef0123456789abcdef01234567",
+            "head": { "outcome": { "kind": "activated", "generation": 9 } },
+        });
+        let GitopsVerdict::Degraded { detail, .. } = gitops_verdict(&v) else {
+            panic!("an unverifiable chain must never read as converged");
+        };
+        assert!(detail.contains("FAILED VERIFICATION"), "{detail}");
+    }
+
+    #[test]
+    fn an_unparseable_status_shape_stays_quiet_rather_than_crying_wolf() {
+        // Missing fields default to healthy ON PURPOSE. A false alarm on
+        // every rebuild trains the operator to scroll past the one that
+        // matters, which is the exact failure this feature exists to fix.
+        assert!(matches!(
+            gitops_verdict(&json!({})),
+            GitopsVerdict::Converged(_)
+        ));
     }
 }
