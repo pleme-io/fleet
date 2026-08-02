@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "991902c276622d1e8d41691d4fd346247f667fa15aaa20b80c9ab74ad9d2bb68",
+  "cargo_lock_sha256": "0d6452eb4165584d839156945fd64b29185754ad097ab9555e6faa44e84ff251",
   "manifest_sha256": {
-    "Cargo.toml": "44843b772dd6b6f648301b003e93ab91f00ffb2e9830525e1e26cbb8a4130729"
+    "Cargo.toml": "6159fa7966a0f3b9ec8842162387710060386cf7eadf1271f488665a842b895c"
   },
   "target_resolves": {
     "base": {
@@ -425,7 +425,7 @@
           "std"
         ]
       },
-      "pleme-fleet-0.1.3": {
+      "pleme-fleet-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1526,7 +1526,7 @@
     "memchr-2.8.3": {
       "edition": "2021"
     },
-    "pleme-fleet-0.1.3": {
+    "pleme-fleet-0.1.4": {
       "edition": "2021",
       "binaries": [
         {
