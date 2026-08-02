@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "5a5274fa1c763368144dad6cee329e1aaa12d4284b538056cb02fea5c4c7dc04",
+  "cargo_lock_sha256": "067956d1fe77c7d54aea759bbf3efce3666de238f9d3a787bbcb1fa588a725ff",
   "manifest_sha256": {
-    "Cargo.toml": "d7af14351c9f17f0a84b60703c71af07c0485a26573e7c77e0521258c7e7d147"
+    "Cargo.toml": "6e5e16f7e7095128e14e82db4f5a62db3b328ac0565f633858f8b69267cf0d27"
   },
   "target_resolves": {
     "base": {
@@ -123,11 +123,11 @@
           "std"
         ]
       },
-      "clap-4.6.4": {
+      "clap-4.6.5": {
         "runtime_dependencies": [
           {
             "name": "clap_builder",
-            "package_key": "clap_builder-4.6.2",
+            "package_key": "clap_builder-4.6.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -159,7 +159,7 @@
           "usage"
         ]
       },
-      "clap_builder-4.6.2": {
+      "clap_builder-4.6.5": {
         "runtime_dependencies": [
           {
             "name": "anstream",
@@ -425,7 +425,7 @@
           "std"
         ]
       },
-      "pleme-fleet-0.1.1": {
+      "pleme-fleet-0.1.2": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -439,7 +439,7 @@
           },
           {
             "name": "clap",
-            "package_key": "clap-4.6.4",
+            "package_key": "clap-4.6.5",
             "kind": "normal",
             "features": [
               "cargo",
@@ -1464,7 +1464,7 @@
     "bitflags-2.13.1": {
       "edition": "2021"
     },
-    "clap-4.6.4": {
+    "clap-4.6.5": {
       "edition": "2024",
       "binaries": [
         {
@@ -1473,7 +1473,7 @@
         }
       ]
     },
-    "clap_builder-4.6.2": {
+    "clap_builder-4.6.5": {
       "edition": "2024"
     },
     "clap_derive-4.6.4": {
@@ -1526,7 +1526,7 @@
     "memchr-2.8.3": {
       "edition": "2021"
     },
-    "pleme-fleet-0.1.1": {
+    "pleme-fleet-0.1.2": {
       "edition": "2021",
       "binaries": [
         {
