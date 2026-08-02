@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use colored::Colorize;
 use fs4::fs_std::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
@@ -9,6 +10,64 @@ use super::utils::{
     log_info, log_success, log_warning, rebuild_timeout, run_command, run_command_output,
     run_command_timed,
 };
+
+/// One row of the `mado e2e` smoke matrix.
+#[derive(Debug, serde::Deserialize)]
+struct E2eRow {
+    name: String,
+    pass: bool,
+    #[serde(default)]
+    skipped: bool,
+    #[serde(default)]
+    detail: String,
+}
+
+/// Pull the `mado e2e` JSON verdict out of a captured run.
+///
+/// Deliberately tolerant, and deliberately not authoritative. The child
+/// interleaves its report with whatever its tracing subscriber and nix
+/// decide to say, so the report is SEARCHED FOR rather than assumed to
+/// be the whole stream.
+///
+/// Every `{` is a candidate, in order, and a candidate is accepted only
+/// if it prefix-parses as JSON carrying a non-empty `rows` array. The
+/// naive "slice from the first `{`" does not work and the test pins why:
+/// rmcp's startup line contains `peer_info=Some(InitializeResult { … })`,
+/// so the first `{` in a passing rebuild is inside Rust `Debug` output,
+/// not JSON. Prefix-parsing (rather than whole-string) additionally means
+/// trailing nix chatter after the report cannot hide it.
+///
+/// Returning `None` means "could not render this nicely" — never "the
+/// gate failed". The exit status is the only verdict and the caller reads
+/// it independently, which is what keeps a prettifier from ever passing a
+/// gate that did not pass, or failing one that did.
+fn parse_e2e_report(stdout: &str) -> Option<(String, Vec<E2eRow>)> {
+    for (start, _) in stdout.match_indices('{') {
+        let Some(value) = serde_json::Deserializer::from_str(&stdout[start..])
+            .into_iter::<serde_json::Value>()
+            .next()
+            .and_then(Result::ok)
+        else {
+            continue;
+        };
+        let Some(rows) = value
+            .get("rows")
+            .and_then(|r| serde_json::from_value::<Vec<E2eRow>>(r.clone()).ok())
+        else {
+            continue;
+        };
+        if rows.is_empty() {
+            continue;
+        }
+        let shell = value
+            .get("shell")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(shell not reported)")
+            .to_string();
+        return Some((shell, rows));
+    }
+    None
+}
 
 /// Serializes concurrent `fleet rebuild` invocations against each other.
 ///
@@ -679,18 +738,79 @@ fn darwin_rebuild(
             .status()
             .map_or(false, |s| s.success());
         if has_app {
-            log_info("Running e2e gate against the candidate closure (.#e2e-mado)...");
-            let status = Command::new("nix")
+            log_info("e2e gate — driving the candidate closure's mado/frostmourne matrix");
+            // CAPTURED, not inherited. The gate is a machine-readable JSON
+            // report, and it was being dumped raw into the operator's
+            // rebuild — brace-wrapped rows interleaved with rmcp's own
+            // `INFO serve_inner: rmcp::service: …` tracing and a
+            // 400-character `peer_info=Some(InitializeResult { … })` line.
+            // None of that is actionable while it PASSES; all of it is
+            // actionable when it fails. So: capture, render the rows, and
+            // release the raw text only on failure, where it is evidence.
+            //
+            // RUST_LOG=off silences the child's tracing subscriber at the
+            // source rather than filtering its lines back out downstream —
+            // the noise is the MCP client's, not the gate's verdict.
+            let out = Command::new("nix")
                 .args(["run", ".#e2e-mado"])
                 .current_dir(flake_root)
-                .status()
+                .env("RUST_LOG", "off")
+                .output()
                 .context("Failed to launch the e2e gate")?;
-            if !status.success() {
+
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let report = parse_e2e_report(&stdout);
+
+            if let Some((shell, rows)) = &report {
+                let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
+                for row in rows {
+                    let (mark, name) = if row.skipped {
+                        ("·".dimmed(), row.name.normal().dimmed())
+                    } else if row.pass {
+                        ("✓".green().bold(), row.name.normal())
+                    } else {
+                        ("✗".red().bold(), row.name.red().bold())
+                    };
+                    println!(
+                        "       {mark} {name:<width$}  {}",
+                        row.detail.dimmed(),
+                        width = width
+                    );
+                }
+                // The shell under test is the whole point of the gate — it
+                // is what proves the closure ships the binary it claims —
+                // so name it, by store path, rather than "verified".
+                println!("       {} {}", "shell".dimmed(), shell.dimmed());
+            }
+
+            if !out.status.success() {
+                // Everything the capture withheld, now that it is evidence.
+                if report.is_none() && !stdout.trim().is_empty() {
+                    eprintln!("{}", stdout.trim_end());
+                }
+                if !stderr.trim().is_empty() {
+                    eprintln!("{}", stderr.trim_end());
+                }
                 anyhow::bail!(
-                    "e2e gate FAILED — the candidate closure's mado/frostmourne smoke matrix                      did not pass; refusing to switch. Inspect with `nix run .#e2e-mado`;                      break-glass override: FLEET_SKIP_E2E_GATE=1 (document why)."
+                    "e2e gate FAILED — the candidate closure's mado/frostmourne smoke \
+                     matrix did not pass; refusing to switch. Inspect with \
+                     `nix run .#e2e-mado`; break-glass override: \
+                     FLEET_SKIP_E2E_GATE=1 (document why)."
                 );
             }
-            log_success("e2e gate passed — candidate closure verified interactive");
+
+            let passed = report.as_ref().map_or(0, |(_, r)| {
+                r.iter().filter(|row| row.pass && !row.skipped).count()
+            });
+            let total = report.as_ref().map_or(0, |(_, r)| r.len());
+            if total > 0 {
+                log_success(&format!(
+                    "e2e gate passed — {passed}/{total} checks, candidate closure verified interactive"
+                ));
+            } else {
+                log_success("e2e gate passed — candidate closure verified interactive");
+            }
         } else {
             log_info("e2e gate: no .#e2e-mado app in this flake — skipped");
         }
@@ -941,5 +1061,49 @@ mod gitops_verdict_tests {
             gitops_verdict(&json!({})),
             GitopsVerdict::Converged(_)
         ));
+    }
+
+    /// The prettifier must survive the REAL captured stream — which is
+    /// not clean JSON. This fixture is the literal shape observed during
+    /// a rebuild on ryn (2026-08-01): two rmcp tracing lines and a
+    /// ~400-char `peer_info=Some(InitializeResult { … })` — note the
+    /// BRACES, which is why the parser scans to the first `{` of the
+    /// report rather than trusting the first `{` it sees... and why this
+    /// test exists to prove that choice is right.
+    #[test]
+    fn parse_e2e_report_survives_the_rmcp_noise() {
+        let captured = concat!(
+            "2026-08-02T04:20:29.808050Z  INFO serve_inner: rmcp::service: Service ",
+            "initialized as client peer_info=Some(InitializeResult { protocol_version: ",
+            "ProtocolVersion(\"2025-03-26\"), capabilities: ServerCapabilities { ",
+            "experimental: None, tools: Some(ToolsCapability { list_changed: None }) } })\n",
+            "2026-08-02T04:20:31.858699Z  INFO serve_inner: rmcp::service: task cancelled\n",
+            "{\n  \"shell\": \"/nix/store/46124-frostmourne/bin/frostmourne\",\n",
+            "  \"rows\": [\n",
+            "    { \"name\": \"spawn_term\", \"pass\": true, \"skipped\": false, \"detail\": \"session_id=mado-session-1\" },\n",
+            "    { \"name\": \"prompt_visible\", \"pass\": true, \"skipped\": false, \"detail\": \"rendered in 511ms\" }\n",
+            "  ],\n  \"pass\": true\n}"
+        );
+
+        let (shell, rows) = parse_e2e_report(captured)
+            .expect("the report must be recoverable from a noisy stream");
+        assert_eq!(shell, "/nix/store/46124-frostmourne/bin/frostmourne");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "spawn_term");
+        assert!(rows.iter().all(|r| r.pass));
+        assert_eq!(rows[1].detail, "rendered in 511ms");
+    }
+
+    /// Unparseable input yields None — "could not render", never a
+    /// verdict. The caller reads the exit status for that, so a
+    /// prettifier can neither pass a failed gate nor fail a passing one.
+    #[test]
+    fn parse_e2e_report_never_invents_a_verdict() {
+        assert!(parse_e2e_report("").is_none());
+        assert!(parse_e2e_report("nix: build failed, no json here").is_none());
+        // Well-formed JSON that simply is not the report.
+        assert!(parse_e2e_report("{\"unrelated\": 1}").is_none());
+        // Present but empty rows is not a renderable matrix.
+        assert!(parse_e2e_report("{\"shell\":\"x\",\"rows\":[]}").is_none());
     }
 }
