@@ -77,6 +77,36 @@ pub const NOT_ENROLLED: &str = "notEnrolled";
 /// they disagreed, an operator would learn to trust whichever was quietest.
 const STALE_AFTER_POLLS: u64 = 3;
 
+/// Outcomes that mean a tick is STILL RUNNING rather than finished.
+///
+/// ── ★ A LONG TICK IS NOT A STOPPED LOOP ─────────────────────────────────
+/// Measured on cid, 2026-08-03: sentinela alive (pid 15215), last tick
+/// `building` 273s earlier, poll 60s — and this function said
+/// "the loop is stopped, not idle". It was building, which is the loop
+/// working. A nix build routinely exceeds 3 polls; the heartbeat cannot
+/// be written again until the tick that is doing the building returns.
+///
+/// This is the design's own failure mode, inverted. The point of the
+/// verdict was that absent evidence is never rounded to healthy; a rule
+/// that cries `stopped` through every legitimate build teaches the
+/// operator to ignore it, which costs the same as rounding up.
+///
+/// So staleness is judged against what the reconciler said it was DOING:
+/// a terminal outcome must be followed by another tick within the poll
+/// budget; a non-terminal one is allowed the build budget below.
+const IN_FLIGHT_OUTCOMES: &[&str] = &["building", "applying", "fetching", "switching"];
+
+/// How long a tick may stay in a non-terminal outcome before it is a hang
+/// rather than a build.
+///
+/// 45 minutes: chosen to exceed a cold full-system rebuild on the slowest
+/// enrolled node, because the cost of the two errors is asymmetric — a
+/// false `stopped` is noise the operator learns to filter, a late `stopped`
+/// costs the difference between 45 minutes and however long until someone
+/// looks. Deliberately NOT derived from the poll interval: how long a build
+/// takes has nothing to do with how often the loop wakes.
+const IN_FLIGHT_BUDGET_SECS: u64 = 45 * 60;
+
 /// Decide a verdict from already-read values. Pure, so every arm is
 /// provable without a node, a clock, or a filesystem.
 #[must_use]
@@ -86,6 +116,7 @@ pub fn classify(
     tick_age_secs: Option<u64>,
     poll_seconds: Option<u64>,
     failures: Option<u64>,
+    last_outcome: Option<&str>,
 ) -> (&'static str, Option<String>) {
     // Two DIFFERENT unknowns, and saying the wrong one is the same defect
     // this whole surface exists to remove: an earlier draft reported "no
@@ -109,11 +140,36 @@ pub fn classify(
             );
         }
     };
-    if age > STALE_AFTER_POLLS * poll {
+    // What the reconciler said it was doing decides which budget applies.
+    let in_flight = last_outcome.is_some_and(|o| IN_FLIGHT_OUTCOMES.contains(&o));
+    let budget = if in_flight {
+        IN_FLIGHT_BUDGET_SECS
+    } else {
+        STALE_AFTER_POLLS * poll
+    };
+    if age > budget {
         return (
             STOPPED,
+            Some(if in_flight {
+                format!(
+                    "tick has been `{}` for {age}s, past the {IN_FLIGHT_BUDGET_SECS}s build                      budget — a build this long is a hang, not progress",
+                    last_outcome.unwrap_or("?")
+                )
+            } else {
+                format!("no tick for {age}s against a {poll}s poll — the loop is stopped, not idle")
+            }),
+        );
+    }
+    // An in-flight tick is WORKING, and must not be reported as converged
+    // just because nothing has failed yet: the build it is running may be
+    // the one that moves the node to HEAD. Saying `converged` here would
+    // claim a result that has not happened.
+    if in_flight {
+        return (
+            UNKNOWN,
             Some(format!(
-                "no tick for {age}s against a {poll}s poll — the loop is stopped, not idle"
+                "tick in progress (`{}`, {age}s) — the outcome is not known yet",
+                last_outcome.unwrap_or("?")
             )),
         );
     }
@@ -183,6 +239,7 @@ pub fn local(state_dir: &Path, node: String, now_epoch: u64) -> NodeConvergence 
         age,
         poll,
         failures,
+        outcome.as_deref(),
     );
     NodeConvergence {
         node,
@@ -305,14 +362,28 @@ mod tests {
     /// surface reported it healthy.
     #[test]
     fn a_stopped_loop_is_stopped_even_with_a_clean_chain() {
-        let (v, why) = classify(Some(REV), Some(REV), Some(60177), Some(POLL), Some(0));
+        let (v, why) = classify(
+            Some(REV),
+            Some(REV),
+            Some(60177),
+            Some(POLL),
+            Some(0),
+            Some("converged"),
+        );
         assert_eq!(v, STOPPED);
         assert!(why.unwrap().contains("stopped, not idle"));
     }
 
     #[test]
     fn a_live_loop_off_head_is_behind() {
-        let (v, why) = classify(Some(REV), Some(HEAD), Some(30), Some(POLL), Some(0));
+        let (v, why) = classify(
+            Some(REV),
+            Some(HEAD),
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("converged"),
+        );
         assert_eq!(v, BEHIND);
         let why = why.unwrap();
         assert!(why.contains("7176c21") && why.contains("588cf40"), "{why}");
@@ -323,7 +394,14 @@ mod tests {
     /// not converged no matter what it last activated.
     #[test]
     fn failures_outrank_a_matching_rev() {
-        let (v, why) = classify(Some(REV), Some(REV), Some(30), Some(POLL), Some(4136));
+        let (v, why) = classify(
+            Some(REV),
+            Some(REV),
+            Some(30),
+            Some(POLL),
+            Some(4136),
+            Some("converged"),
+        );
         assert_eq!(v, FAILING);
         assert!(why.unwrap().contains("4136"));
     }
@@ -333,10 +411,25 @@ mod tests {
     #[test]
     fn absent_evidence_is_unknown_never_converged() {
         assert_eq!(
-            classify(Some(REV), Some(REV), None, Some(POLL), Some(0)).0,
+            classify(
+                Some(REV),
+                Some(REV),
+                None,
+                Some(POLL),
+                Some(0),
+                Some("converged")
+            )
+            .0,
             UNKNOWN
         );
-        let (v, why) = classify(Some(REV), Some(REV), Some(30), None, Some(0));
+        let (v, why) = classify(
+            Some(REV),
+            Some(REV),
+            Some(30),
+            None,
+            Some(0),
+            Some("converged"),
+        );
         assert_eq!(v, UNKNOWN);
         // ...and it must say WHICH unknown. Reporting "no heartbeat" here
         // would contradict the age this very document prints.
@@ -344,7 +437,15 @@ mod tests {
         // Alive and not failing, but the daemon published no branch HEAD:
         // we cannot prove it is at HEAD, so we do not claim it.
         assert_eq!(
-            classify(Some(REV), None, Some(30), Some(POLL), Some(0)).0,
+            classify(
+                Some(REV),
+                None,
+                Some(30),
+                Some(POLL),
+                Some(0),
+                Some("converged")
+            )
+            .0,
             UNKNOWN
         );
     }
@@ -352,7 +453,14 @@ mod tests {
     /// The one path to `converged`, so the vocabulary is not write-only.
     #[test]
     fn alive_at_head_and_not_failing_is_converged() {
-        let (v, why) = classify(Some(REV), Some(REV), Some(30), Some(POLL), Some(0));
+        let (v, why) = classify(
+            Some(REV),
+            Some(REV),
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("converged"),
+        );
         assert_eq!(v, CONVERGED);
         assert!(why.is_none(), "a converged node needs no excuse");
     }
@@ -372,15 +480,116 @@ mod tests {
 
     /// The staleness boundary, pinned both sides — shared verbatim with
     /// three other surfaces.
+    /// ── ★ THE cid FALSE POSITIVE, 2026-08-03 ────────────────────────
+    /// sentinela alive (pid 15215), last tick `building` 273s earlier
+    /// against a 60s poll. The rule said "the loop is stopped, not idle".
+    /// It was building — the loop working. Reported as `stopped`, this
+    /// trains the operator to ignore the verdict, which costs exactly what
+    /// rounding up to `converged` costs.
+    #[test]
+    fn a_build_running_past_three_polls_is_not_a_stopped_loop() {
+        let (v, why) = classify(
+            Some(REV),
+            Some(HEAD),
+            Some(273),
+            Some(60),
+            Some(0),
+            Some("building"),
+        );
+        assert_ne!(v, STOPPED, "a running build is not a stopped loop: {why:?}");
+    }
+
+    /// ...and it is not `converged` either. The build in flight may be the
+    /// one that moves this node to HEAD; claiming a result before it lands
+    /// is the original defect wearing the opposite sign.
+    #[test]
+    fn a_tick_in_flight_is_unknown_never_converged() {
+        let (v, why) = classify(
+            Some(REV),
+            Some(REV),
+            Some(273),
+            Some(60),
+            Some(0),
+            Some("building"),
+        );
+        assert_eq!(v, UNKNOWN, "in-flight must not claim a result: {why:?}");
+        assert!(why.expect("reason").contains("in progress"));
+    }
+
+    /// The budget is not infinite — a build stuck for hours IS a hang, and
+    /// the whole point is that it still gets caught.
+    #[test]
+    fn a_build_past_the_build_budget_is_stopped() {
+        let (v, why) = classify(
+            Some(REV),
+            Some(HEAD),
+            Some(IN_FLIGHT_BUDGET_SECS + 1),
+            Some(60),
+            Some(0),
+            Some("building"),
+        );
+        assert_eq!(v, STOPPED, "a hung build must still be caught");
+        assert!(why.expect("reason").contains("hang"));
+    }
+
+    /// The negative control: widening the budget must NOT weaken the
+    /// ordinary case. A terminal outcome still goes stale at 3 polls, so
+    /// the fix cannot be "stop reporting stopped".
+    #[test]
+    fn a_terminal_outcome_still_goes_stale_at_three_polls() {
+        let (v, _) = classify(
+            Some(REV),
+            Some(HEAD),
+            Some(STALE_AFTER_POLLS * POLL + 1),
+            Some(POLL),
+            Some(0),
+            Some("converged"),
+        );
+        assert_eq!(v, STOPPED, "a finished tick that never recurred is stopped");
+    }
+
+    /// An unrecognised outcome gets the STRICT budget. A new sentinela
+    /// verb this table does not know must not silently buy itself 45
+    /// minutes of immunity — unknown means treat-as-terminal, which fails
+    /// loud rather than quiet.
+    #[test]
+    fn an_unrecognised_outcome_gets_the_strict_budget() {
+        let (v, _) = classify(
+            Some(REV),
+            Some(HEAD),
+            Some(STALE_AFTER_POLLS * POLL + 1),
+            Some(POLL),
+            Some(0),
+            Some("frobnicating"),
+        );
+        assert_eq!(v, STOPPED);
+    }
+
     #[test]
     fn the_staleness_boundary_is_three_poll_intervals() {
         let budget = STALE_AFTER_POLLS * POLL;
         assert_eq!(
-            classify(Some(REV), Some(REV), Some(budget), Some(POLL), Some(0)).0,
+            classify(
+                Some(REV),
+                Some(REV),
+                Some(budget),
+                Some(POLL),
+                Some(0),
+                Some("converged")
+            )
+            .0,
             CONVERGED
         );
         assert_eq!(
-            classify(Some(REV), Some(REV), Some(budget + 1), Some(POLL), Some(0)).0,
+            classify(
+                Some(REV),
+                Some(REV),
+                Some(budget + 1),
+                Some(POLL),
+                Some(0),
+                Some("converged")
+            )
+            .0,
             STOPPED
         );
     }
