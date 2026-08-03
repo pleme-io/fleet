@@ -457,8 +457,17 @@ fn report_gitops_health() {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out) else {
         return;
     };
-    match gitops_verdict(&v) {
-        GitopsVerdict::Converged(line) => log_info(&line),
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs().cast_signed());
+    let ev = Evidence::from_status(&v, now_epoch);
+    match gitops_verdict(&v, &ev) {
+        GitopsVerdict::Converged(p) => {
+            log_info(&format!("gitops: converged (at branch HEAD {})", p.rev()));
+        }
+        // Quiet by design: no alarm for a loop we cannot read, but no
+        // claim of health either.
+        GitopsVerdict::Unknown { reason } => log_info(&format!("gitops: unknown — {reason}")),
         GitopsVerdict::Degraded { headline, detail } => {
             log_warning(&headline);
             print!("{detail}");
@@ -466,22 +475,139 @@ fn report_gitops_health() {
     }
 }
 
-/// The rendered verdict, split from the IO so both arms are testable.
-#[derive(Debug, PartialEq, Eq)]
-enum GitopsVerdict {
-    Converged(String),
-    Degraded { headline: String, detail: String },
+/// Independently-measured facts about this node, gathered OUTSIDE the
+/// reconciler's own receipt chain.
+///
+/// ── ★ WHY A VERDICT MAY NOT BE COMPUTED FROM THE CHAIN ALONE ────────────
+/// The chain records what the daemon DID. It cannot record what the daemon
+/// failed to do, and a stopped daemon writes nothing at all — so its last
+/// receipt stays "activated, 0 failures" forever. On 2026-08-02 cid printed
+/// `consecutive_failures: 0, chain_verified: true` with its LaunchDaemon
+/// dead (exit 78 EX_CONFIG since boot) and the node 14 commits behind
+/// origin/main. Every field the old verdict read was true; the conclusion
+/// was false, because convergence is a claim about the WORLD (does the
+/// running system match the branch, right now) and the chain is only a
+/// claim about the daemon's own history.
+///
+/// So convergence needs evidence the daemon cannot fake by being idle:
+/// where the branch actually points, and when the loop last drew breath.
+/// A field we could not measure is `None` — never a default that happens
+/// to read as healthy.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Evidence {
+    /// Branch HEAD as resolved by the daemon on its most recent probe.
+    /// `None` when the status document does not carry one (pre-heartbeat
+    /// daemons) — which makes the verdict `Unknown`, never `Converged`.
+    declared_head_rev: Option<String>,
+    /// When the loop last completed a tick, epoch seconds. This is the
+    /// liveness signal: an ACTIVATION timestamp cannot serve, because a
+    /// healthy loop with nothing to do activates nothing for weeks.
+    last_tick_at_epoch: Option<i64>,
+    /// Wall clock at the moment of judgement, epoch seconds.
+    now_epoch: Option<i64>,
+    /// Configured poll interval; a heartbeat older than a few of these
+    /// means the loop is stopped, not quiet.
+    poll_seconds: Option<u64>,
 }
 
-/// Turn a `sentinela status` JSON document into an operator-facing verdict.
+impl Evidence {
+    /// How many poll intervals of silence before a loop is presumed stopped.
+    /// Three tolerates one slow build plus one missed cycle without crying
+    /// wolf — the failure mode the previous author correctly feared.
+    const STALE_AFTER_POLLS: i64 = 3;
+
+    /// Read the evidence a status document is able to supply. Fields absent
+    /// from the document stay `None`; this never invents one.
+    fn from_status(v: &serde_json::Value, now_epoch: i64) -> Self {
+        Self {
+            declared_head_rev: v["head_rev"].as_str().map(str::to_owned),
+            last_tick_at_epoch: v["last_tick_at_unix_ms"].as_i64().map(|ms| ms / 1000),
+            now_epoch: Some(now_epoch),
+            poll_seconds: v["poll_seconds"].as_u64(),
+        }
+    }
+
+    /// `Some(true)` = the loop is demonstrably alive, `Some(false)` =
+    /// demonstrably stopped, `None` = cannot tell. The third case is the
+    /// one the old code collapsed into "healthy".
+    fn heartbeat_fresh(&self) -> Option<bool> {
+        let (last, now, poll) = (
+            self.last_tick_at_epoch?,
+            self.now_epoch?,
+            self.poll_seconds?,
+        );
+        Some(now.saturating_sub(last) <= Self::STALE_AFTER_POLLS * poll.cast_signed())
+    }
+}
+
+/// The sealed proof that convergence was MEASURED.
 ///
-/// Pure: no IO, no process spawn — so the degraded arm can be proven
-/// against a known-bad document instead of only ever being seen in an
-/// incident. Unknown/missing fields read as HEALTHY on purpose: a status
-/// shape we cannot parse must not manufacture a false alarm, since the
-/// only thing worse than a silent reconciler is one that cries wolf until
-/// the operator learns to scroll past it.
-fn gitops_verdict(v: &serde_json::Value) -> GitopsVerdict {
+/// `Converged`'s payload lives in a private module with a private field, so
+/// the only way to obtain one anywhere in this crate is [`Proof::prove`],
+/// which demands the evidence. There is deliberately no `Converged(String)`
+/// to hand-roll: the previous shape let any caller assert convergence from
+/// a string, and one did. This is the compile-time half of the fix — the
+/// tests below are only the demonstration.
+mod proof {
+    use super::Evidence;
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    pub struct Proof(String);
+
+    impl Proof {
+        /// Construct ONLY from evidence that positively establishes every
+        /// leg of convergence. Any missing or contradicting leg returns
+        /// `None`, and the caller must then say `Unknown` or `Degraded`.
+        pub fn prove(ev: &Evidence, deployed_rev: &str) -> Option<Self> {
+            // The loop must be demonstrably alive. `None` (cannot tell) is
+            // not alive — that is the whole lesson of the dead cid daemon.
+            if ev.heartbeat_fresh() != Some(true) {
+                return None;
+            }
+            // The deployed rev must equal where the branch actually points.
+            let head = ev.declared_head_rev.as_deref()?;
+            if head != deployed_rev {
+                return None;
+            }
+            Some(Self(super::short_rev(deployed_rev)))
+        }
+
+        pub fn rev(&self) -> &str {
+            &self.0
+        }
+    }
+}
+use proof::Proof;
+
+/// The rendered verdict, split from the IO so every arm is testable.
+///
+/// `Unknown` is the arm the original shape lacked, and its absence is why
+/// an empty status document scored as converged. "We cannot tell" is a
+/// third thing: it must not raise an alarm (the cry-wolf failure the
+/// original author guarded against) and it must not assert health either.
+#[derive(Debug, PartialEq, Eq)]
+enum GitopsVerdict {
+    Converged(Proof),
+    Degraded { headline: String, detail: String },
+    Unknown { reason: String },
+}
+
+/// Turn a `sentinela status` document PLUS independently-measured
+/// [`Evidence`] into an operator-facing verdict.
+///
+/// Pure: no IO, no process spawn — so every arm can be proven against a
+/// known document instead of only ever being seen in an incident.
+///
+/// Missing fields no longer read as healthy. They read as [`Unknown`],
+/// which prints without alarm but never claims convergence. The original
+/// note here said "Unknown/missing fields read as HEALTHY on purpose … the
+/// only thing worse than a silent reconciler is one that cries wolf" — the
+/// fear was right and is preserved by `Unknown`; the remedy was wrong,
+/// because it made an unreadable loop indistinguishable from a converged
+/// one, which is precisely how cid reported itself healthy while dead.
+///
+/// [`Unknown`]: GitopsVerdict::Unknown
+fn gitops_verdict(v: &serde_json::Value, ev: &Evidence) -> GitopsVerdict {
     let streak = v["consecutive_failures"].as_u64().unwrap_or(0);
     let verified = v["chain_verified"].as_bool().unwrap_or(true);
     let last_ok = v["last_activated_rev"].as_str();
@@ -515,8 +641,59 @@ fn gitops_verdict(v: &serde_json::Value) -> GitopsVerdict {
         };
     }
 
+    // ── ★ A STOPPED LOOP IS LOUDER THAN A FAILING ONE ────────────────────
+    // Checked BEFORE the streak, because a stopped daemon has a streak of
+    // zero. cid's dead LaunchDaemon (exit 78, down since boot) presented
+    // exactly the healthy document below; only the heartbeat separates it
+    // from a genuinely converged node.
+    if ev.heartbeat_fresh() == Some(false) {
+        let silent_for = match (ev.now_epoch, ev.last_tick_at_epoch) {
+            (Some(now), Some(last)) => format!("{}s", now.saturating_sub(last)),
+            _ => "unknown".to_owned(),
+        };
+        return GitopsVerdict::Degraded {
+            headline: "gitops: STOPPED — the reconciler is not ticking".to_owned(),
+            detail: format!(
+                "    last tick      : {silent_for} ago (poll interval {}s)\n    \
+                 last activated : {last_activated}\n    \
+                 note           : a stopped loop reports the same 0 failures as a \
+                 healthy one; only the heartbeat tells them apart\n    \
+                 detail         : sentinela --config {GITOPS_CONFIG} status\n",
+                ev.poll_seconds.unwrap_or(0)
+            ),
+        };
+    }
+
     if streak == 0 && verified {
-        return GitopsVerdict::Converged(format!("gitops: converged (last activated {last_activated})"));
+        // Convergence must be PROVEN, not inferred from the absence of
+        // failure. Without evidence there is no `Converged` to return —
+        // the type makes that unrepresentable, so this cannot regress to
+        // an optimistic default the way the old `Converged(String)` did.
+        return match last_ok.and_then(|rev| Proof::prove(ev, rev)) {
+            Some(p) => GitopsVerdict::Converged(p),
+            None => {
+                // Distinguish "behind" (we know HEAD, it differs) from
+                // "cannot tell" (no evidence at all). Only the first is an
+                // alarm; the second must stay quiet.
+                match (ev.declared_head_rev.as_deref(), last_ok) {
+                    (Some(head), Some(dep)) if head != dep => GitopsVerdict::Degraded {
+                        headline: "gitops: BEHIND — the node is not at branch HEAD".to_owned(),
+                        detail: format!(
+                            "    branch HEAD    : {}\n    deployed       : {}\n    \
+                             detail         : sentinela --config {GITOPS_CONFIG} status\n",
+                            short_rev(head),
+                            short_rev(dep)
+                        ),
+                    },
+                    _ => GitopsVerdict::Unknown {
+                        reason: "status document carries no heartbeat or branch HEAD; \
+                                 convergence cannot be proven (daemon predates the \
+                                 heartbeat field?)"
+                            .to_owned(),
+                    },
+                }
+            }
+        };
     }
 
     // Say how LONG it has been wrong, not merely that it is wrong —
@@ -977,17 +1154,138 @@ mod gitops_verdict_tests {
     use super::*;
     use serde_json::json;
 
+    /// Evidence for a loop that ticked one second ago and whose branch
+    /// HEAD is `rev` — i.e. everything convergence requires.
+    fn proving_evidence(rev: &str) -> Evidence {
+        Evidence {
+            declared_head_rev: Some(rev.to_owned()),
+            last_tick_at_epoch: Some(1_785_724_800),
+            now_epoch: Some(1_785_724_801),
+            poll_seconds: Some(60),
+        }
+    }
+
     #[test]
     fn converged_chain_reports_the_last_activated_rev() {
+        let rev = "da42c8f8d082453e8ad303c55aacbebca1420336";
         let v = json!({
             "consecutive_failures": 0,
             "chain_verified": true,
-            "last_activated_rev": "da42c8f8d082453e8ad303c55aacbebca1420336",
+            "last_activated_rev": rev,
             "head": { "outcome": { "kind": "activated", "generation": 1215 } },
         });
-        assert_eq!(
-            gitops_verdict(&v),
-            GitopsVerdict::Converged("gitops: converged (last activated da42c8f)".to_owned())
+        let GitopsVerdict::Converged(p) = gitops_verdict(&v, &proving_evidence(rev)) else {
+            panic!("a live loop sitting on branch HEAD is the one case that IS converged");
+        };
+        assert_eq!(p.rev(), "da42c8f");
+    }
+
+    /// ── ★ THE REGRESSION THIS REFACTOR EXISTS FOR ────────────────────────
+    /// cid's ACTUAL `sentinela status` output, captured 2026-08-02 23:15
+    /// local, while its LaunchDaemon had been dead since boot (exit 78
+    /// EX_CONFIG) and the node sat 14 commits behind origin/main. Every
+    /// field here is true and the old verdict scored it `Converged`.
+    ///
+    /// Red run: revert `gitops_verdict` to `streak == 0 && verified` and
+    /// this returns Converged for a node that has not reconciled in 17
+    /// hours.
+    #[test]
+    fn cids_dead_daemon_document_must_never_score_as_converged() {
+        let v = json!({
+            "branch": "main",
+            "chain_verified": true,
+            "consecutive_failures": 0,
+            "flake_url": "github:pleme-io/nix",
+            "hostname": "cid",
+            "last_activated_rev": "7176c2181d217e1beec7aa3e5244f620ac26dca7",
+            "receipts": 5,
+            "head": {
+                "at_unix_ms": 1_785_664_639_338i64,
+                "outcome": { "generation": 655, "kind": "activated" },
+                "rev": "7176c2181d217e1beec7aa3e5244f620ac26dca7",
+                "seq": 4
+            },
+        });
+
+        // (a) As the document stands today it carries no heartbeat and no
+        //     branch HEAD, so convergence is UNPROVABLE — quiet, but never
+        //     a claim of health.
+        let ev = Evidence::from_status(&v, 1_785_724_816);
+        assert!(
+            matches!(gitops_verdict(&v, &ev), GitopsVerdict::Unknown { .. }),
+            "a document with no heartbeat cannot prove convergence"
+        );
+
+        // (b) Once the daemon publishes `last_tick_at_unix_ms` and
+        //     `poll_seconds` (M2), the same chain is positively diagnosed:
+        //     silent for 16.7 hours against a 60s poll. Note BOTH fields
+        //     are required — staleness is unjudgeable without the interval,
+        //     so a missing `poll_seconds` correctly yields Unknown above
+        //     rather than a guessed default.
+        let with_beat = Evidence {
+            last_tick_at_epoch: Some(1_785_664_639),
+            poll_seconds: Some(60),
+            ..Evidence::from_status(&v, 1_785_724_816)
+        };
+        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v, &with_beat) else {
+            panic!("a loop silent for 16.7h must be reported, not scored converged");
+        };
+        assert!(headline.contains("STOPPED"), "{headline}");
+        assert!(detail.contains("60177s ago"), "{detail}");
+    }
+
+    #[test]
+    fn a_live_loop_behind_branch_head_is_reported_as_behind() {
+        let deployed = "7176c2181d217e1beec7aa3e5244f620ac26dca7";
+        let head = "588cf40f6bc7b603943741a2abd074cfaf2142cd";
+        let v = json!({
+            "consecutive_failures": 0,
+            "chain_verified": true,
+            "last_activated_rev": deployed,
+            "head": { "outcome": { "kind": "activated", "generation": 655 } },
+        });
+        let ev = Evidence {
+            declared_head_rev: Some(head.to_owned()),
+            ..proving_evidence(deployed)
+        };
+        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v, &ev) else {
+            panic!("deployed != HEAD is the definition of not converged");
+        };
+        assert!(headline.contains("BEHIND"), "{headline}");
+        assert!(detail.contains("588cf40"), "{detail}");
+        assert!(detail.contains("7176c21"), "{detail}");
+    }
+
+    /// The type-level half of the fix, demonstrated: no combination of
+    /// missing evidence yields a `Proof`. The compile-time half is that
+    /// `Proof` has a private field in its own module, so this is the only
+    /// constructor in the crate.
+    #[test]
+    fn a_proof_cannot_be_built_without_every_leg_of_evidence() {
+        let rev = "da42c8f8d082453e8ad303c55aacbebca1420336";
+        let no_head = Evidence {
+            declared_head_rev: None,
+            ..proving_evidence(rev)
+        };
+        let no_beat = Evidence {
+            last_tick_at_epoch: None,
+            ..proving_evidence(rev)
+        };
+        assert!(
+            Proof::prove(&Evidence::default(), rev).is_none(),
+            "no evidence at all"
+        );
+        assert!(
+            Proof::prove(&no_head, rev).is_none(),
+            "a fresh heartbeat alone does not prove we are at HEAD"
+        );
+        assert!(
+            Proof::prove(&no_beat, rev).is_none(),
+            "being at HEAD does not prove the loop is still alive"
+        );
+        assert!(
+            Proof::prove(&proving_evidence(rev), rev).is_some(),
+            "both legs present"
         );
     }
 
@@ -1004,7 +1302,8 @@ mod gitops_verdict_tests {
                 "error": "build failed: building the system configuration...\nerror: creating symlink '/result.tmp': Read-only file system",
             } },
         });
-        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v) else {
+        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v, &Evidence::default())
+        else {
             panic!("a 4136-failure streak must not read as converged");
         };
         assert!(headline.contains("DEGRADED"));
@@ -1026,7 +1325,8 @@ mod gitops_verdict_tests {
             "last_activated_rev": "0123456789abcdef0123456789abcdef01234567",
             "head": { "outcome": { "kind": "activated", "generation": 9 } },
         });
-        let GitopsVerdict::Degraded { detail, .. } = gitops_verdict(&v) else {
+        let GitopsVerdict::Degraded { detail, .. } = gitops_verdict(&v, &Evidence::default())
+        else {
             panic!("an unverifiable chain must never read as converged");
         };
         assert!(detail.contains("FAILED VERIFICATION"), "{detail}");
@@ -1045,22 +1345,29 @@ mod gitops_verdict_tests {
             "receipts": 0,
             "head": serde_json::Value::Null,
         });
-        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v) else {
+        let GitopsVerdict::Degraded { headline, detail } = gitops_verdict(&v, &Evidence::default())
+        else {
             panic!("a chain with no activation must never read as converged");
         };
         assert!(headline.contains("NO DEPLOY RECORDED"), "{headline}");
         assert!(detail.contains("no activation"), "{detail}");
     }
 
+    /// The cry-wolf guard is PRESERVED — an unreadable document raises no
+    /// alarm — but it no longer asserts health. This test previously
+    /// asserted `Converged`, which is how an empty JSON object certified a
+    /// node as reconciled.
     #[test]
-    fn an_unparseable_status_shape_stays_quiet_rather_than_crying_wolf() {
-        // Missing fields default to healthy ON PURPOSE. A false alarm on
-        // every rebuild trains the operator to scroll past the one that
-        // matters, which is the exact failure this feature exists to fix.
-        assert!(matches!(
-            gitops_verdict(&json!({})),
-            GitopsVerdict::Converged(_)
-        ));
+    fn an_unparseable_status_shape_is_unknown_not_converged() {
+        let verdict = gitops_verdict(&json!({}), &Evidence::default());
+        assert!(
+            matches!(verdict, GitopsVerdict::Unknown { .. }),
+            "an empty document must be Unknown, never Converged: {verdict:?}"
+        );
+        assert!(
+            !matches!(verdict, GitopsVerdict::Degraded { .. }),
+            "and it must not cry wolf either"
+        );
     }
 
     /// The prettifier must survive the REAL captured stream — which is
