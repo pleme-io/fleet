@@ -93,20 +93,24 @@ impl Default for FleetMcp {
 #[tool_handler]
 impl ServerHandler for FleetMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            instructions: Some(
-                "fleet — GitOps convergence for the node this server runs on. \
-                 `gitops_convergence` reads the reconciler's published heartbeat \
-                 and receipt chain; it never reaches a remote host, so a node \
-                 that is unreachable is not thereby reported unhealthy, and a \
-                 node whose daemon has died still reports its last known state \
-                 plus how stale that state is. Absent evidence returns the \
-                 verdict `unknown` — it is never rounded to `converged`."
-                    .to_owned(),
-            ),
-            ..Default::default()
-        }
+        // rmcp 1.x marks ServerInfo #[non_exhaustive], so a struct expression
+        // is forbidden outside its crate — default-then-mutate is the
+        // sanctioned construction (the same shape tend's server already uses).
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.instructions = Some(
+            "fleet — GitOps convergence for the node this server runs on. \
+             `gitops_convergence` reads the reconciler's published heartbeat \
+             and receipt chain; it never reaches a remote host, so a node \
+             that is unreachable is not thereby reported unhealthy, and a \
+             node whose daemon has died still reports its last known state \
+             plus how stale that state is. Absent evidence returns the \
+             verdict `unknown` — it is never rounded to `converged`, and a \
+             tick still running returns `unknown` too rather than claiming a \
+             result that has not happened yet."
+                .to_owned(),
+        );
+        info
     }
 }
 
