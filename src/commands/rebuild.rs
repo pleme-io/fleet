@@ -86,12 +86,41 @@ fn parse_e2e_report(stdout: &str) -> Option<(String, Vec<E2eRow>)> {
 /// second invocation blocks until the first finishes instead of racing
 /// its activation state.
 fn acquire_rebuild_lock() -> Result<File> {
-    acquire_lock_at(&std::env::temp_dir().join("fleet-rebuild.lock"))
+    acquire_lock_at(Path::new(REBUILD_LOCK_PATH))
 }
+
+/// The one machine-wide rebuild lock path.
+///
+/// ── ★ ABSOLUTE ON PURPOSE — `temp_dir()` MADE THIS LOCK SERIALIZE NOTHING ──
+/// This was `std::env::temp_dir().join("fleet-rebuild.lock")`. On unix
+/// `temp_dir()` is `$TMPDIR` with a `/tmp` fallback — and macOS gives every
+/// user a *per-user* `$TMPDIR`. MEASURED on ryn 2026-08-02:
+///
+///   TMPDIR                     = /var/folders/y9/k5htqzn…/T/
+///   /tmp/fleet-rebuild.lock    = DID NOT EXIST
+///   actual lock                = /var/folders/y9/…/T/fleet-rebuild.lock (luis.d)
+///
+/// So the lock serialized one user's shell sessions against each other and
+/// nothing else. The root `pleme-gitops` daemon — whose launchd job sets only
+/// PATH/NIX_CONFIG/SENTINELA_CONFIG, no TMPDIR — resolved a different path
+/// entirely, so an operator `darwin-rebuild switch` and a daemon rebuild ran
+/// concurrently with no contention at all. That is the exact race the lock was
+/// added for (see `acquire_rebuild_lock`'s sops-nix receipt).
+///
+/// The old doc comment asserted "the shared `/tmp/fleet-rebuild.lock` every
+/// real invocation uses" — which was simply false on this platform, and the
+/// falsehood was invisible because the lock still *worked* for the single-user
+/// case it was tested in.
+///
+/// `/private/tmp` is mode `1777` (sticky, world-writable), so both root and an
+/// unprivileged operator can create and open this path; the sticky bit stops
+/// either from unlinking the other's file. The lock is advisory `flock`, so it
+/// costs nothing when uncontended.
+const REBUILD_LOCK_PATH: &str = "/tmp/fleet-rebuild.lock";
 
 /// `acquire_rebuild_lock`'s path-parameterized core — split out so tests
 /// can exercise real flock contention against a throwaway path instead of
-/// the shared `/tmp/fleet-rebuild.lock` every real invocation uses.
+/// the machine-wide [`REBUILD_LOCK_PATH`] every real invocation uses.
 fn acquire_lock_at(lock_path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
@@ -103,10 +132,37 @@ fn acquire_lock_at(lock_path: &Path) -> Result<File> {
                 lock_path.display()
             )
         })?;
+    // Cross-user reachability: whoever creates the file first owns it, and the
+    // other party still has to open it for WRITE to take an exclusive flock. A
+    // default 0644 would hand the first creator a permanent monopoly — root
+    // creates it, the operator's rebuild then dies on EACCES instead of
+    // waiting. Best-effort: a pre-existing file owned by the other user cannot
+    // be chmod'd by us, and that is fine — it is already 0666 from its own
+    // creation. Never fatal, because failing to widen a mode must not break a
+    // rebuild that would otherwise have proceeded.
+    let _ = fs::set_permissions(lock_path, fs::Permissions::from_mode(0o666));
     if FileExt::try_lock_exclusive(&file).is_err() {
-        log_info("Another rebuild is already in progress — waiting for it to finish...");
+        // Name the holder. A bare "waiting..." with no identity and no timeout
+        // is the thing that makes a blocked interactive rebuild feel hung —
+        // the operator cannot tell a live peer from a wedged one.
+        match fs::read_to_string(lock_path) {
+            Ok(h) if !h.trim().is_empty() => log_info(&format!(
+                "Another rebuild is already in progress ({}) — waiting for it to finish...",
+                h.trim()
+            )),
+            _ => log_info("Another rebuild is already in progress — waiting for it to finish..."),
+        }
         FileExt::lock_exclusive(&file).context("failed to acquire rebuild lock")?;
     }
+    // Stamp our identity for the next waiter to read. Truncate first: the
+    // previous holder's line is stale the moment we own the lock.
+    let holder = format!(
+        "pid {} · {}",
+        std::process::id(),
+        std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned())
+    );
+    let _ = file.set_len(0);
+    let _ = std::io::Write::write_all(&mut (&file), holder.as_bytes());
     Ok(file)
 }
 
@@ -1273,6 +1329,59 @@ mod rebuild_lock_tests {
             "fleet-rebuild-test-{name}-{}.lock",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn the_rebuild_lock_path_is_machine_wide_not_per_user() {
+        // THE REGRESSION TEST FOR THE ACTUAL BUG. The lock was
+        // `std::env::temp_dir().join(...)`, and on macOS `temp_dir()` is a
+        // PER-USER `/var/folders/…/T/`. Measured on ryn 2026-08-02: root's
+        // gitops daemon and the operator resolved different paths, so the
+        // lock serialized nothing across users and two rebuilds ran
+        // concurrently — the race it exists to prevent.
+        //
+        // Assert the property, not the literal: the path must be absolute and
+        // must NOT be derived from this process's temp dir.
+        let p = Path::new(REBUILD_LOCK_PATH);
+        assert!(p.is_absolute(), "rebuild lock path must be absolute");
+        let per_user = std::env::temp_dir();
+        assert!(
+            !p.starts_with(&per_user) || per_user == Path::new("/tmp"),
+            "rebuild lock must not live under the per-user temp dir ({}), \
+             or two users get two different locks",
+            per_user.display()
+        );
+    }
+
+    #[test]
+    fn the_lock_file_is_group_and_other_writable() {
+        // Cross-user reachability: whichever party creates the file first must
+        // not lock the other out. Root creating a 0644 file would make every
+        // subsequent operator rebuild fail with EACCES rather than wait.
+        let path = fresh_lock_path("perms");
+        let _guard = acquire_lock_at(&path).expect("acquire");
+        let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o666,
+            "lock file must be world-writable, got {mode:o}"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_holder_identity_is_recorded_for_the_next_waiter() {
+        // A bare "waiting..." with no identity is what makes a blocked
+        // interactive rebuild indistinguishable from a wedged one.
+        let path = fresh_lock_path("holder");
+        {
+            let _guard = acquire_lock_at(&path).expect("acquire");
+            let stamped = fs::read_to_string(&path).expect("read holder");
+            assert!(
+                stamped.contains(&std::process::id().to_string()),
+                "lock must record the holder pid, got {stamped:?}"
+            );
+        }
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
