@@ -250,9 +250,14 @@ fn read_chain_tail(path: &Path) -> (Option<String>, Option<u64>) {
     (activated, Some(streak))
 }
 
-/// Where the Darwin reconciler publishes. Matches `pleme.gitops.stateDir`.
+/// Where the reconciler publishes. Matches `pleme.gitops.stateDir`.
+/// Public so the MCP tool reads the same path rather than repeating it —
+/// two spellings of one location is how a reader ends up reporting on a
+/// directory nothing writes to.
+pub const DEFAULT_STATE_DIR: &str = "/var/log/pleme-gitops";
+
 fn default_state_dir() -> PathBuf {
-    PathBuf::from("/var/log/pleme-gitops")
+    PathBuf::from(DEFAULT_STATE_DIR)
 }
 
 pub fn convergence(json: bool) -> Result<()> {

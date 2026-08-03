@@ -5,6 +5,7 @@ pub mod diff;
 pub mod exec;
 pub mod flow;
 pub mod info;
+pub mod mcp;
 pub mod pangea;
 pub mod ping;
 pub mod pitr_forge;
