@@ -733,6 +733,141 @@ fn gitops_verdict(v: &serde_json::Value, ev: &Evidence) -> GitopsVerdict {
     }
 }
 
+/// What kind of dirt a path is — and therefore whether a machine may fix
+/// it without asking.
+///
+/// ── ★ THE LINE IS "DERIVED", NOT "UNIMPORTANT" ──────────────────────────
+/// An automated loop that reacts to a dirty tree by discarding changes is
+/// a data-loss bug wearing a remediation costume. But a lock file is not
+/// authored: every byte of `flake.lock` / `Cargo.lock` / `Cargo.gen.lock`
+/// is reproducible from its inputs, so regenerating one loses nothing that
+/// was not already recoverable.
+///
+/// That distinction is what makes automatic repair safe for exactly one
+/// class and unsafe for every other. It is drawn here, once, so the
+/// rebuild gate and the background reconciler cannot disagree about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dirt {
+    /// Reproducible from its inputs — a machine may regenerate it.
+    Derived,
+    /// Someone wrote this. Only a human decides its fate.
+    Authored,
+}
+
+/// Classify one `git status --porcelain` path.
+#[must_use]
+pub fn classify_dirt(path: &str) -> Dirt {
+    // Matched on the FILE NAME, not a path prefix: these appear at a
+    // workspace root and inside members, and a prefix rule would miss the
+    // nested ones — which are exactly the ones a fleet-wide update touches.
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name {
+        "flake.lock" | "Cargo.lock" | "Cargo.gen.lock" | "Cargo.build-spec.json" => Dirt::Derived,
+        _ => Dirt::Authored,
+    }
+}
+
+/// Split a porcelain listing into (derived, authored) paths.
+///
+/// Returns paths, not counts, because every caller needs to NAME what it
+/// found — a remediation that says "3 files" tells the operator nothing
+/// they can act on.
+#[must_use]
+pub fn partition_dirt(porcelain: &str) -> (Vec<String>, Vec<String>) {
+    let mut derived = Vec::new();
+    let mut authored = Vec::new();
+    for line in porcelain.lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            continue;
+        }
+        // `XY path` — status codes are the first two columns. A rename
+        // reads `R  old -> new`; the NEW path is what exists on disk.
+        let path = line.get(3..).unwrap_or("").trim();
+        let path = path.rsplit(" -> ").next().unwrap_or(path);
+        if path.is_empty() {
+            continue;
+        }
+        match classify_dirt(path) {
+            Dirt::Derived => derived.push(path.to_owned()),
+            Dirt::Authored => authored.push(path.to_owned()),
+        }
+    }
+    (derived, authored)
+}
+
+/// Refuse to rebuild from a tree that is not fully committed.
+///
+/// Returns the offending paths in the error so the operator does not have
+/// to re-run `git status` to learn what stopped them.
+fn ensure_tree_is_committed(flake_root: &Path) -> Result<()> {
+    if std::env::var("FLEET_ALLOW_DIRTY_REBUILD").is_ok() {
+        log_warning(
+            "FLEET_ALLOW_DIRTY_REBUILD set — building from an uncommitted tree. \
+             The reconciler will revert this to HEAD on its next tick.",
+        );
+        return Ok(());
+    }
+    let out = Command::new("git")
+        // --no-optional-locks: a rebuild must never be the thing that
+        // strands an index.lock in the operator's repo.
+        .args(["--no-optional-locks", "status", "--porcelain"])
+        .current_dir(flake_root)
+        .output();
+    let Ok(out) = out else {
+        // git absent or unrunnable is not evidence of cleanliness, but it
+        // is also not this command's job to adjudicate. Say so and continue.
+        log_warning("could not run `git status` — proceeding without the clean-tree check");
+        return Ok(());
+    };
+    if !out.status.success() {
+        log_warning("`git status` failed — proceeding without the clean-tree check");
+        return Ok(());
+    }
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let (derived, authored) = partition_dirt(&listing);
+    if derived.is_empty() && authored.is_empty() {
+        return Ok(());
+    }
+    let dirty: Vec<&str> = listing.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut msg = String::from(
+        "refusing to rebuild: the flake tree has uncommitted changes.\n\n\
+         A rebuild from a dirty tree produces a system that exists in no \
+         commit, and the gitops reconciler will converge this node back to \
+         HEAD — silently reverting it, and recording that revert as a clean \
+         activation.\n\n",
+    );
+    for line in dirty.iter().take(20) {
+        msg.push_str("    ");
+        msg.push_str(line);
+        msg.push('\n');
+    }
+    if dirty.len() > 20 {
+        msg.push_str("    … and ");
+        msg.push_str(&(dirty.len() - 20).to_string());
+        msg.push_str(" more\n");
+    }
+    // Naming the derived subset is actionable in a way the raw list is
+    // not: those are regenerable, so the operator knows they can be
+    // discarded without thought, and the background reconciler is allowed
+    // to do exactly that unattended.
+    if !derived.is_empty() {
+        msg.push_str("\n  derived (regenerable, safe to discard): ");
+        msg.push_str(&derived.join(", "));
+        msg.push('\n');
+    }
+    if !authored.is_empty() {
+        msg.push_str("  authored (only you can decide): ");
+        msg.push_str(&authored.join(", "));
+        msg.push('\n');
+    }
+    msg.push_str(
+        "\nCommit or stash, then rebuild. To build anyway (it will not \
+         survive the next reconcile): FLEET_ALLOW_DIRTY_REBUILD=1",
+    );
+    anyhow::bail!(msg)
+}
+
 /// Short-form a 40-char rev for display, leaving anything else untouched.
 fn short_rev(rev: &str) -> String {
     rev.get(..7).unwrap_or(rev).to_owned()
@@ -746,6 +881,22 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
 
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let flake_root = find_flake_root(&cwd)?;
+
+    // ── ★ A DIRTY TREE IS A HARD FAIL, NOT A WARNING ─────────────────────
+    // nix only warns ("Git tree … is dirty") and builds anyway. Under
+    // GitOps that warning is the beginning of a divergence, not a note:
+    //
+    //   1. you build a system that exists in NO commit, so nothing can
+    //      reproduce it and no receipt can name it;
+    //   2. the reconciler then converges the node to the pushed HEAD and
+    //      SILENTLY reverts your build, usually minutes later;
+    //   3. the receipt chain records that activation as a clean success,
+    //      because from its side it was.
+    //
+    // The node oscillates and every surface reports health. Refusing up
+    // front is the only point at which this is cheap to see.
+    ensure_tree_is_committed(&flake_root)?;
+
     let hostname = get_hostname()?;
 
     // PATH-harden (macOS): `darwin-rebuild` lives ONLY in
@@ -1172,6 +1323,66 @@ mod rebuild_lock_tests {
 
 #[cfg(test)]
 mod gitops_verdict_tests {
+
+    // ── ★ WHAT A MACHINE MAY FIX UNATTENDED ─────────────────────────────
+    // An automated loop that reacts to a dirty tree by discarding changes
+    // is a data-loss bug in a remediation costume. The safe class is
+    // exactly the DERIVED one — reproducible from its inputs, so
+    // regenerating loses nothing that was not already recoverable.
+
+    #[test]
+    fn lock_files_are_derived_wherever_they_sit() {
+        // Nested is the case that matters: a fleet-wide update touches
+        // member locks, and a path-PREFIX rule would miss every one.
+        for p in [
+            "flake.lock",
+            "Cargo.lock",
+            "Cargo.gen.lock",
+            "Cargo.build-spec.json",
+            "crates/blue-lang-cli/Cargo.lock",
+            "deep/nested/flake.lock",
+        ] {
+            assert_eq!(classify_dirt(p), Dirt::Derived, "{p}");
+        }
+    }
+
+    #[test]
+    fn source_is_authored_even_when_it_looks_generated() {
+        for p in [
+            "src/main.rs",
+            "flake.nix",
+            "modules/pleme/shared/gitops.nix",
+            // Named like a lock, is not one — the match is exact.
+            "flake.lock.bak",
+            "docs/Cargo.lock.md",
+        ] {
+            assert_eq!(classify_dirt(p), Dirt::Authored, "{p}");
+        }
+    }
+
+    #[test]
+    fn porcelain_is_split_by_class_and_renames_use_the_new_path() {
+        let porcelain = concat!(
+            " M flake.lock\n",
+            " M src/main.rs\n",
+            "?? crates/x/Cargo.lock\n",
+            "R  old/name.rs -> new/name.rs\n",
+        );
+        let (derived, authored) = partition_dirt(porcelain);
+        assert_eq!(derived, vec!["flake.lock", "crates/x/Cargo.lock"]);
+        // A rename's NEW path is what exists on disk; classifying the old
+        // one would judge a file that is no longer there.
+        assert_eq!(authored, vec!["src/main.rs", "new/name.rs"]);
+    }
+
+    #[test]
+    fn a_clean_tree_partitions_to_nothing() {
+        let (d, a) = partition_dirt("");
+        assert!(d.is_empty() && a.is_empty());
+        let (d, a) = partition_dirt("\n  \n");
+        assert!(d.is_empty() && a.is_empty());
+    }
+
     use super::*;
     use serde_json::json;
 
