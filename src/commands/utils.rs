@@ -182,11 +182,7 @@ pub fn run_command_output(cmd: &mut Command) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn ssh_cmd_with_config(
-    user: &str,
-    host: &str,
-    ssh: &crate::config::ResolvedSsh,
-) -> Command {
+pub fn ssh_cmd_with_config(user: &str, host: &str, ssh: &crate::config::ResolvedSsh) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.arg("-o")
         .arg(format!("ConnectTimeout={}", ssh.connect_timeout));
@@ -295,10 +291,19 @@ mod timeout_tests {
         let start = Instant::now();
         let err = run_command_timed(&mut c, Some(Duration::from_secs(2)))
             .expect_err("a hanging command must fail, not block");
-        assert!(start.elapsed() < Duration::from_secs(30), "must not have waited it out");
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "must not have waited it out"
+        );
         let msg = format!("{err}");
-        assert!(msg.contains("was killed"), "error must say it killed the process: {msg}");
-        assert!(msg.contains("FLEET_REBUILD_TIMEOUT_SECS"), "error must say how to raise it");
+        assert!(
+            msg.contains("was killed"),
+            "error must say it killed the process: {msg}"
+        );
+        assert!(
+            msg.contains("FLEET_REBUILD_TIMEOUT_SECS"),
+            "error must say how to raise it"
+        );
     }
 
     /// The bail text must point at the signal that actually discriminates.
@@ -313,10 +318,12 @@ mod timeout_tests {
     fn the_bail_text_names_log_progress_not_cpu() {
         let mut c = Command::new("sleep");
         c.arg("600");
-        let err = run_command_timed(&mut c, Some(Duration::from_secs(2)))
-            .expect_err("must fail");
+        let err = run_command_timed(&mut c, Some(Duration::from_secs(2))).expect_err("must fail");
         let msg = format!("{err}");
-        assert!(msg.contains("wc -l"), "must give the log-progress check: {msg}");
+        assert!(
+            msg.contains("wc -l"),
+            "must give the log-progress check: {msg}"
+        );
         assert!(
             msg.contains("NOT cpu%"),
             "must explicitly warn cpu% is not the signal: {msg}"

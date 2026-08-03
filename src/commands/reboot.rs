@@ -1,8 +1,8 @@
 use anyhow::Result;
 
+use super::utils::*;
 use crate::config::FleetConfig;
 use crate::targeting::ResolvedTargets;
-use super::utils::*;
 
 pub fn run(targets: &ResolvedTargets, yes: bool, config: &FleetConfig) -> Result<()> {
     let names: Vec<&str> = targets.names();
@@ -21,7 +21,10 @@ pub fn run(targets: &ResolvedTargets, yes: bool, config: &FleetConfig) -> Result
         match ssh_run_with_config(&node.ssh_user, &node.hostname, &ssh, "systemctl reboot") {
             Ok(_) => log_success(&format!("{} Reboot initiated", node_label(name))),
             // SSH will likely disconnect during reboot — that's expected
-            Err(_) => log_success(&format!("{} Reboot initiated (connection closed)", node_label(name))),
+            Err(_) => log_success(&format!(
+                "{} Reboot initiated (connection closed)",
+                node_label(name)
+            )),
         }
     }
 

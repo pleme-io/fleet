@@ -1,10 +1,15 @@
 use anyhow::Result;
 use std::process::Command;
 
-use crate::targeting::ResolvedTargets;
 use super::utils::*;
+use crate::targeting::ResolvedTargets;
 
-pub fn run(targets: &ResolvedTargets, dry_run: bool, show_trace: bool, skip_checks: bool) -> Result<()> {
+pub fn run(
+    targets: &ResolvedTargets,
+    dry_run: bool,
+    show_trace: bool,
+    skip_checks: bool,
+) -> Result<()> {
     let flake = flake_dir();
 
     if targets.is_single() {
@@ -15,11 +20,20 @@ pub fn run(targets: &ResolvedTargets, dry_run: bool, show_trace: bool, skip_chec
     }
 }
 
-fn deploy_single(flake: &str, name: &str, dry_run: bool, show_trace: bool, skip_checks: bool) -> Result<()> {
+fn deploy_single(
+    flake: &str,
+    name: &str,
+    dry_run: bool,
+    show_trace: bool,
+    skip_checks: bool,
+) -> Result<()> {
     if dry_run {
         log_info(&format!("Dry-run deploy to {} (deploy-rs)", name));
     } else {
-        log_info(&format!("Deploying to {} (deploy-rs, magic rollback)", name));
+        log_info(&format!(
+            "Deploying to {} (deploy-rs, magic rollback)",
+            name
+        ));
     }
 
     let mut cmd = Command::new("deploy");
@@ -44,7 +58,12 @@ fn deploy_single(flake: &str, name: &str, dry_run: bool, show_trace: bool, skip_
     Ok(())
 }
 
-fn deploy_fleet(flake: &str, targets: &ResolvedTargets, dry_run: bool, show_trace: bool) -> Result<()> {
+fn deploy_fleet(
+    flake: &str,
+    targets: &ResolvedTargets,
+    dry_run: bool,
+    show_trace: bool,
+) -> Result<()> {
     let names = targets.names();
     let on = names.join(",");
 

@@ -44,6 +44,16 @@ enum Commands {
         skip_checks: bool,
     },
 
+    /// Report whether this node is converged with its branch — the typed
+    /// document an MCP tool or a log reader consumes. Reads what the
+    /// reconciler PUBLISHED (heartbeat + receipt chain), so it works on a
+    /// node that is unreachable and on one whose daemon is dead.
+    Convergence {
+        /// Emit the typed JSON document.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Build NixOS configurations without activating
     Build {
         /// Target nodes (names or @tag)
@@ -238,6 +248,9 @@ fn main() -> Result<()> {
             }
         }
 
+        Commands::Convergence { json } => {
+            commands::convergence::convergence(json)?;
+        }
         Commands::Build {
             targets,
             all,
@@ -361,7 +374,10 @@ fn main() -> Result<()> {
                         };
                         println!(
                             "  {} ({}) -> {} [{}]",
-                            name, secret.provider, target.display(), status
+                            name,
+                            secret.provider,
+                            target.display(),
+                            status
                         );
                     }
                 }

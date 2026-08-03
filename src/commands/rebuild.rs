@@ -97,7 +97,12 @@ fn acquire_lock_at(lock_path: &Path) -> Result<File> {
         .create(true)
         .write(true)
         .open(lock_path)
-        .with_context(|| format!("failed to open rebuild lock file at {}", lock_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to open rebuild lock file at {}",
+                lock_path.display()
+            )
+        })?;
     if FileExt::try_lock_exclusive(&file).is_err() {
         log_info("Another rebuild is already in progress — waiting for it to finish...");
         FileExt::lock_exclusive(&file).context("failed to acquire rebuild lock")?;
@@ -122,8 +127,7 @@ pub fn find_flake_root(start: &Path) -> Result<PathBuf> {
 }
 
 fn get_hostname() -> Result<String> {
-    run_command_output(Command::new("hostname").arg("-s"))
-        .context("Failed to get hostname")
+    run_command_output(Command::new("hostname").arg("-s")).context("Failed to get hostname")
 }
 
 /// Check whether a command exists in PATH.
@@ -154,7 +158,9 @@ fn bootstrap_nix_auth(flake_root: &Path) -> Result<()> {
 
     // Need the age key to decrypt secrets
     if !age_key_path.exists() {
-        log_warning("No SOPS age key — cannot bootstrap GitHub auth (private flake inputs may fail)");
+        log_warning(
+            "No SOPS age key — cannot bootstrap GitHub auth (private flake inputs may fail)",
+        );
         return Ok(());
     }
 
@@ -168,17 +174,14 @@ fn bootstrap_nix_auth(flake_root: &Path) -> Result<()> {
         "sops".to_string()
     } else {
         log_info("sops not in PATH — building from nixpkgs...");
-        let out = run_command_output(
-            Command::new("nix")
-                .args([
-                    "--extra-experimental-features",
-                    "nix-command flakes",
-                    "build",
-                    "--print-out-paths",
-                    "--no-link",
-                    "nixpkgs#sops",
-                ]),
-        )
+        let out = run_command_output(Command::new("nix").args([
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "build",
+            "--print-out-paths",
+            "--no-link",
+            "nixpkgs#sops",
+        ]))
         .context("Failed to build sops from nixpkgs")?;
         format!("{out}/bin/sops")
     };
@@ -193,7 +196,10 @@ fn bootstrap_nix_auth(flake_root: &Path) -> Result<()> {
 
     if !token_output.status.success() {
         let stderr = String::from_utf8_lossy(&token_output.stderr);
-        log_warning(&format!("Could not decrypt GitHub token: {}", stderr.trim()));
+        log_warning(&format!(
+            "Could not decrypt GitHub token: {}",
+            stderr.trim()
+        ));
         return Ok(());
     }
 
@@ -299,7 +305,8 @@ fn bootstrap_nix_custom_conf() -> Result<()> {
     let user = std::env::var("USER").unwrap_or_default();
     let mut additions = String::new();
     if !has_sandbox {
-        additions.push_str("\n# Bootstrap: disable sandbox for macOS .app builds\nsandbox = false\n");
+        additions
+            .push_str("\n# Bootstrap: disable sandbox for macOS .app builds\nsandbox = false\n");
     }
     if !has_trusted {
         additions.push_str(&format!(
@@ -328,7 +335,12 @@ fn bootstrap_nix_custom_conf() -> Result<()> {
     // Restart the nix daemon so it picks up the new settings
     log_info("Restarting nix daemon to apply settings...");
     let _ = Command::new("sudo")
-        .args(["launchctl", "kickstart", "-k", "system/org.nixos.nix-daemon"])
+        .args([
+            "launchctl",
+            "kickstart",
+            "-k",
+            "system/org.nixos.nix-daemon",
+        ])
         .status();
     // (Determinate's systems.determinate.nix-daemon was removed in the
     // Determinate→nix-darwin migration; kickstarting it just printed a benign
@@ -699,7 +711,9 @@ fn gitops_verdict(v: &serde_json::Value, ev: &Evidence) -> GitopsVerdict {
     // Say how LONG it has been wrong, not merely that it is wrong —
     // "failed" invites a shrug, "4136 consecutive" does not.
     let mut detail = String::new();
-    detail.push_str(&format!("    head receipt   : {kind} ({streak} consecutive)\n"));
+    detail.push_str(&format!(
+        "    head receipt   : {kind} ({streak} consecutive)\n"
+    ));
     detail.push_str(&format!("    last activated : {last_activated}\n"));
     if !verified {
         detail.push_str("    chain          : FAILED VERIFICATION (truncated or reordered)\n");
@@ -709,7 +723,9 @@ fn gitops_verdict(v: &serde_json::Value, ev: &Evidence) -> GitopsVerdict {
         let head_line = err.lines().next().unwrap_or(err);
         detail.push_str(&format!("    last error     : {head_line}\n"));
     }
-    detail.push_str(&format!("    detail         : sentinela --config {GITOPS_CONFIG} status\n"));
+    detail.push_str(&format!(
+        "    detail         : sentinela --config {GITOPS_CONFIG} status\n"
+    ));
 
     GitopsVerdict::Degraded {
         headline: "gitops: DEGRADED — the node is not tracking the branch".to_owned(),
@@ -761,7 +777,9 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     // before any builds. Only writes if settings are missing (first run).
     if std::env::consts::OS == "macos" {
         if let Err(e) = bootstrap_nix_custom_conf() {
-            log_warning(&format!("Nix daemon config bootstrap: {e} — continuing anyway"));
+            log_warning(&format!(
+                "Nix daemon config bootstrap: {e} — continuing anyway"
+            ));
         }
         // Accept Xcode license — xcodebuild refuses to run for any user
         // (including nix build users) until the license is accepted.
@@ -1100,7 +1118,10 @@ mod rebuild_lock_tests {
     use std::time::Duration;
 
     fn fresh_lock_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("fleet-rebuild-test-{name}-{}.lock", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "fleet-rebuild-test-{name}-{}.lock",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -1392,8 +1413,8 @@ mod gitops_verdict_tests {
             "  ],\n  \"pass\": true\n}"
         );
 
-        let (shell, rows) = parse_e2e_report(captured)
-            .expect("the report must be recoverable from a noisy stream");
+        let (shell, rows) =
+            parse_e2e_report(captured).expect("the report must be recoverable from a noisy stream");
         assert_eq!(shell, "/nix/store/46124-frostmourne/bin/frostmourne");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "spawn_term");

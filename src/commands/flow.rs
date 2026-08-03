@@ -58,7 +58,10 @@ pub fn run(
         return Ok(());
     }
 
-    log_info(&format!("Running flow: {} — {}", name, flow_def.description));
+    log_info(&format!(
+        "Running flow: {} — {}",
+        name, flow_def.description
+    ));
     println!();
 
     // Pre-resolve flow-level secrets exactly once. Plaintext is held in
@@ -90,10 +93,7 @@ pub fn run(
 
             // Evaluate condition
             if let Some(ref cond) = step.condition {
-                let status = Command::new("sh")
-                    .arg("-c")
-                    .arg(&cond.command)
-                    .status();
+                let status = Command::new("sh").arg("-c").arg(&cond.command).status();
                 match status {
                     Ok(s) if s.success() => {}
                     _ => {
@@ -110,7 +110,15 @@ pub fn run(
                 step.targets.clone()
             };
 
-            let result = dispatch_action(config, registry, step, &step_targets, cli_all, &all_outputs, &resolved_secrets)?;
+            let result = dispatch_action(
+                config,
+                registry,
+                step,
+                &step_targets,
+                cli_all,
+                &all_outputs,
+                &resolved_secrets,
+            )?;
 
             // Store outputs for downstream interpolation
             if !result.outputs.is_empty() {
@@ -140,7 +148,10 @@ fn dispatch_action(
             super::build::run(&resolved, *show_trace)?;
             Ok(StepResult::default())
         }
-        ActionDef::Deploy { show_trace, dry_run } => {
+        ActionDef::Deploy {
+            show_trace,
+            dry_run,
+        } => {
             let resolved = resolve_step_targets(registry, targets, cli_all)?;
             super::deploy::run(&resolved, *dry_run, *show_trace, false)?;
             Ok(StepResult::default())
@@ -202,7 +213,8 @@ fn dispatch_action(
             let flake = flake_dir();
             log_info("Running home-manager-rebuild...");
             let mut cmd = Command::new("nix");
-            cmd.arg("run").arg(format!("{}#home-manager-rebuild", flake));
+            cmd.arg("run")
+                .arg(format!("{}#home-manager-rebuild", flake));
             if *show_trace {
                 cmd.arg("--").arg("--show-trace");
             }
@@ -276,7 +288,10 @@ fn resolve_step_env(
 ) -> HashMap<String, String> {
     let mut resolved = HashMap::new();
     for (key, value) in env {
-        resolved.insert(key.clone(), resolve_template(value, all_outputs, resolved_secrets));
+        resolved.insert(
+            key.clone(),
+            resolve_template(value, all_outputs, resolved_secrets),
+        );
     }
     resolved
 }
@@ -290,12 +305,8 @@ fn resolve_flow_secrets(
     let mut out = HashMap::new();
     for (name, secret) in flow_secrets {
         let value = match secret {
-            FlowSecret::Sops { file, key } => {
-                secrets::resolve_sops(config_dir, file, key)
-                    .map_err(|e| anyhow::anyhow!(
-                        "secret '{}' resolution failed: {}", name, e
-                    ))?
-            }
+            FlowSecret::Sops { file, key } => secrets::resolve_sops(config_dir, file, key)
+                .map_err(|e| anyhow::anyhow!("secret '{}' resolution failed: {}", name, e))?,
         };
         out.insert(name.clone(), value);
     }
@@ -388,7 +399,14 @@ fn print_execution_plan(flow_def: &crate::config::FlowDef, levels: &[Vec<usize>]
                 println!("      has condition");
             }
             // Show PitrForge-specific details
-            if let ActionDef::PitrForge { command, tenant, environment, output_json, .. } = &step.action {
+            if let ActionDef::PitrForge {
+                command,
+                tenant,
+                environment,
+                output_json,
+                ..
+            } = &step.action
+            {
                 let cmd_str = match command {
                     crate::config::PitrForgeCommand::Verify => "verify",
                     crate::config::PitrForgeCommand::Drill => "drill",
@@ -400,13 +418,23 @@ fn print_execution_plan(flow_def: &crate::config::FlowDef, levels: &[Vec<usize>]
                 };
                 let tenant_str = tenant.as_deref().unwrap_or("-");
                 let env_str = environment.as_deref().unwrap_or("-");
-                println!("      pitr-forge: {} --tenant {} --env {}", cmd_str, tenant_str, env_str);
+                println!(
+                    "      pitr-forge: {} --tenant {} --env {}",
+                    cmd_str, tenant_str, env_str
+                );
                 if let Some(out) = output_json {
                     println!("      output_json: {}", out);
                 }
             }
             // Show Pangea-specific details
-            if let ActionDef::Pangea { file, namespace, operation, env, .. } = &step.action {
+            if let ActionDef::Pangea {
+                file,
+                namespace,
+                operation,
+                env,
+                ..
+            } = &step.action
+            {
                 let op_str = match operation {
                     crate::config::PangeaOperation::Plan => "plan",
                     crate::config::PangeaOperation::Apply => "apply",
@@ -414,7 +442,10 @@ fn print_execution_plan(flow_def: &crate::config::FlowDef, levels: &[Vec<usize>]
                     crate::config::PangeaOperation::Output => "output",
                     crate::config::PangeaOperation::Synth => "synth",
                 };
-                println!("      pangea: {} {} --namespace {}", op_str, file, namespace);
+                println!(
+                    "      pangea: {} {} --namespace {}",
+                    op_str, file, namespace
+                );
                 if !env.is_empty() {
                     for (k, v) in env {
                         println!("      env: {}={}", k, v);
@@ -481,7 +512,11 @@ operation: destroy
 "#;
         let action: ActionDef = serde_yaml_ng::from_str(yaml).unwrap();
         match action {
-            ActionDef::Pangea { operation, namespace, .. } => {
+            ActionDef::Pangea {
+                operation,
+                namespace,
+                ..
+            } => {
                 assert!(matches!(operation, PangeaOperation::Destroy));
                 assert_eq!(namespace, "staging");
             }
@@ -504,10 +539,7 @@ env:
         match action {
             ActionDef::Pangea { env, .. } => {
                 assert_eq!(env.len(), 2);
-                assert_eq!(
-                    env.get("ROLE_ARN").unwrap(),
-                    "${permissions.node_role_arn}"
-                );
+                assert_eq!(env.get("ROLE_ARN").unwrap(), "${permissions.node_role_arn}");
             }
             _ => panic!("Expected Pangea variant"),
         }
@@ -523,7 +555,11 @@ env:
         );
         all_outputs.insert("permissions".to_string(), step_outputs);
 
-        let result = resolve_template("${permissions.node_role_arn}", &all_outputs, &HashMap::new());
+        let result = resolve_template(
+            "${permissions.node_role_arn}",
+            &all_outputs,
+            &HashMap::new(),
+        );
         assert_eq!(result, "arn:aws:iam::123:role/test");
     }
 
@@ -541,7 +577,11 @@ env:
         );
         all_outputs.insert("step1".to_string(), step_outputs);
 
-        let result = resolve_template("role=${step1.arn},profile=${step1.name}", &all_outputs, &HashMap::new());
+        let result = resolve_template(
+            "role=${step1.arn},profile=${step1.name}",
+            &all_outputs,
+            &HashMap::new(),
+        );
         assert_eq!(result, "role=arn:123,profile=my-profile");
     }
 
@@ -570,7 +610,11 @@ env:
 
     #[test]
     fn test_resolve_template_secret_missing() {
-        let result = resolve_template("${secrets.does_not_exist}", &HashMap::new(), &HashMap::new());
+        let result = resolve_template(
+            "${secrets.does_not_exist}",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(result, "");
     }
 
@@ -578,10 +622,7 @@ env:
     fn test_resolve_template_numeric_value() {
         let mut all_outputs = HashMap::new();
         let mut step_outputs = HashMap::new();
-        step_outputs.insert(
-            "count".to_string(),
-            serde_json::json!(42),
-        );
+        step_outputs.insert("count".to_string(), serde_json::json!(42));
         all_outputs.insert("infra".to_string(), step_outputs);
 
         let result = resolve_template("${infra.count}", &all_outputs, &HashMap::new());

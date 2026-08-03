@@ -17,12 +17,7 @@ pub fn validate(flow: &FlowDef) -> Result<ValidatedFlow> {
     // Check for duplicate step IDs
     for (i, step) in flow.steps.iter().enumerate() {
         if let Some(prev) = id_to_idx.insert(&step.id, i) {
-            bail!(
-                "Duplicate step ID '{}' (steps {} and {})",
-                step.id,
-                prev,
-                i
-            );
+            bail!("Duplicate step ID '{}' (steps {} and {})", step.id, prev, i);
         }
     }
 
@@ -33,11 +28,7 @@ pub fn validate(flow: &FlowDef) -> Result<ValidatedFlow> {
         for dep_id in &step.depends_on {
             match id_to_idx.get(dep_id.as_str()) {
                 Some(&idx) => step_deps.push(idx),
-                None => bail!(
-                    "Step '{}' depends on unknown step '{}'",
-                    step.id,
-                    dep_id
-                ),
+                None => bail!("Step '{}' depends on unknown step '{}'", step.id, dep_id),
             }
         }
         deps.push(step_deps);

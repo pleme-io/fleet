@@ -2,9 +2,9 @@ use anyhow::Result;
 use colored::Colorize;
 use std::process::Command;
 
+use super::utils::*;
 use crate::config::FleetConfig;
 use crate::targeting::ResolvedTargets;
-use super::utils::*;
 
 pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
     log_info("Checking SSH connectivity...\n");
@@ -40,7 +40,11 @@ pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
         }
     }
 
-    println!("\n{}/{} nodes reachable", reachable, reachable + unreachable);
+    println!(
+        "\n{}/{} nodes reachable",
+        reachable,
+        reachable + unreachable
+    );
 
     if unreachable > 0 {
         anyhow::bail!("{} node(s) unreachable", unreachable);

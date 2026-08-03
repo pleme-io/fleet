@@ -1,8 +1,8 @@
 use anyhow::Result;
 
+use super::utils::*;
 use crate::config::FleetConfig;
 use crate::targeting::ResolvedTargets;
-use super::utils::*;
 
 pub fn run(targets: &ResolvedTargets, cmd: &[String], config: &FleetConfig) -> Result<()> {
     let remote_cmd = cmd.join(" ");
