@@ -54,6 +54,9 @@ enum Commands {
         json: bool,
     },
 
+    /// Serve the convergence document over MCP (stdio).
+    Mcp,
+
     /// Build NixOS configurations without activating
     Build {
         /// Target nodes (names or @tag)
@@ -250,6 +253,9 @@ fn main() -> Result<()> {
 
         Commands::Convergence { json } => {
             commands::convergence::convergence(json)?;
+        }
+        Commands::Mcp => {
+            commands::mcp::mcp()?;
         }
         Commands::Build {
             targets,
