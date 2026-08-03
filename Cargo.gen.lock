@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "9af0c54bc68220b3d37ee9f41985b9aadeb70613b6066071191c5f7acb1c4919",
+  "cargo_lock_sha256": "97dfdef856abcb60b425e8819d6bb166f62bcf55a4adbdb218c175aa59abd043",
   "manifest_sha256": {
-    "Cargo.toml": "3c802643156924f150db41f1c6658bf1e65de30a3bfa039f8ef237a3bbc68ed7"
+    "Cargo.toml": "2dd49520c0e10e875645887044ddb44d8b333630556ec766323e0227e9346b02"
   },
   "target_resolves": {
     "base": {
@@ -227,15 +227,11 @@
         "features": [
           "alloc",
           "clock",
-          "default",
           "iana-time-zone",
-          "js-sys",
           "now",
           "oldtime",
           "serde",
           "std",
-          "wasm-bindgen",
-          "wasmbind",
           "winapi",
           "windows-link"
         ]
@@ -1105,7 +1101,7 @@
           },
           {
             "name": "rmcp",
-            "package_key": "rmcp-0.15.0",
+            "package_key": "rmcp-1.8.0",
             "kind": "normal",
             "features": [
               "macros",
@@ -1267,7 +1263,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "rmcp-0.15.0": {
+      "rmcp-1.8.0": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -1309,9 +1305,10 @@
             "package_key": "chrono-0.4.45",
             "kind": "normal",
             "features": [
+              "now",
               "serde"
             ],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": "cfg(not(all(target_family = \"wasm\", target_os = \"unknown\")))",
             "tree": "target"
@@ -1348,7 +1345,7 @@
           },
           {
             "name": "rmcp_macros",
-            "package_key": "rmcp-macros-0.15.0",
+            "package_key": "rmcp-macros-1.8.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1447,7 +1444,7 @@
           "transport-io"
         ]
       },
-      "rmcp-macros-0.15.0": {
+      "rmcp-macros-1.8.0": {
         "runtime_dependencies": [
           {
             "name": "darling",
@@ -3352,11 +3349,11 @@
       "edition": "2021",
       "proc_macro": true
     },
-    "rmcp-0.15.0": {
+    "rmcp-1.8.0": {
       "edition": "2024",
       "build_script": "build.rs"
     },
-    "rmcp-macros-0.15.0": {
+    "rmcp-macros-1.8.0": {
       "edition": "2024",
       "proc_macro": true
     },
