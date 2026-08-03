@@ -1,4 +1,5 @@
 pub mod build;
+pub mod convergence;
 pub mod deploy;
 pub mod diff;
 pub mod exec;

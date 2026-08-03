@@ -119,10 +119,7 @@ fn capture_drill_outputs(json_path: &str) -> Result<HashMap<String, serde_json::
     {
         outputs.insert("measured_rto_secs".to_string(), rto.clone());
     }
-    if let Some(total) = json
-        .get("phase_timings")
-        .and_then(|pt| pt.get("total_ms"))
-    {
+    if let Some(total) = json.get("phase_timings").and_then(|pt| pt.get("total_ms")) {
         outputs.insert("total_ms".to_string(), total.clone());
     }
     if let Some(tenant) = json.get("tenant") {
@@ -134,16 +131,13 @@ fn capture_drill_outputs(json_path: &str) -> Result<HashMap<String, serde_json::
 
     // Count gates
     if let Some(gates) = json.get("gate_results").and_then(|g| g.as_array()) {
-        let passed = gates.iter().filter(|g| g.get("passed") == Some(&serde_json::json!(true))).count();
+        let passed = gates
+            .iter()
+            .filter(|g| g.get("passed") == Some(&serde_json::json!(true)))
+            .count();
         let failed = gates.len() - passed;
-        outputs.insert(
-            "gate_count_passed".to_string(),
-            serde_json::json!(passed),
-        );
-        outputs.insert(
-            "gate_count_failed".to_string(),
-            serde_json::json!(failed),
-        );
+        outputs.insert("gate_count_passed".to_string(), serde_json::json!(passed));
+        outputs.insert("gate_count_failed".to_string(), serde_json::json!(failed));
     }
 
     if !outputs.is_empty() {

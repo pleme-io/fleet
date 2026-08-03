@@ -1,5 +1,5 @@
-use anyhow::{bail, Result};
 use crate::registry::{Node, NodeRegistry};
+use anyhow::{bail, Result};
 
 pub struct ResolvedTargets {
     pub nodes: Vec<(String, Node)>,

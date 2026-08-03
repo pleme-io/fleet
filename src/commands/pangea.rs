@@ -100,8 +100,8 @@ fn capture_outputs(
     }
 
     // tofu output -json returns: { "output_name": { "value": ..., "type": ... }, ... }
-    let raw: HashMap<String, serde_json::Value> = serde_json::from_str(&stdout)
-        .with_context(|| "Failed to parse tofu output JSON")?;
+    let raw: HashMap<String, serde_json::Value> =
+        serde_json::from_str(&stdout).with_context(|| "Failed to parse tofu output JSON")?;
 
     // Extract just the "value" field from each output
     let mut outputs = HashMap::new();

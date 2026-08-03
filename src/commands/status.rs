@@ -1,8 +1,8 @@
 use anyhow::Result;
 
+use super::utils::*;
 use crate::config::FleetConfig;
 use crate::targeting::ResolvedTargets;
-use super::utils::*;
 
 pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
     log_info("Gathering node status...\n");
@@ -33,7 +33,10 @@ pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
         )
         .unwrap_or_else(|_| "?".to_string());
 
-        println!("{} gen={} kernel={} nixos={} {}", label, generation, kernel, nixos_version, uptime);
+        println!(
+            "{} gen={} kernel={} nixos={} {}",
+            label, generation, kernel, nixos_version, uptime
+        );
     }
 
     Ok(())

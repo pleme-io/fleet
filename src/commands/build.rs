@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::process::Command;
 
-use crate::targeting::ResolvedTargets;
 use super::utils::*;
+use crate::targeting::ResolvedTargets;
 
 pub fn run(targets: &ResolvedTargets, show_trace: bool) -> Result<()> {
     let flake = flake_dir();

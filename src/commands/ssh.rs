@@ -1,9 +1,9 @@
 use anyhow::{bail, Result};
 use std::os::unix::process::CommandExt;
 
+use super::utils::*;
 use crate::config::FleetConfig;
 use crate::targeting::ResolvedTargets;
-use super::utils::*;
 
 pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
     if !targets.is_single() {

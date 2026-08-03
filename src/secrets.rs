@@ -35,14 +35,10 @@ fn provision_secret(name: &str, secret: &SecretDef, op_cmd: Option<&str>) -> Res
 
     match secret.provider.as_str() {
         "onepassword" => {
-            let op = op_cmd.context(
-                "1Password CLI (op) is required but could not be found or built",
-            )?;
+            let op =
+                op_cmd.context("1Password CLI (op) is required but could not be found or built")?;
 
-            log_info(&format!(
-                "Provisioning secret '{}' from 1Password...",
-                name
-            ));
+            log_info(&format!("Provisioning secret '{}' from 1Password...", name));
 
             let output = Command::new(op)
                 .arg("read")
@@ -121,10 +117,7 @@ pub fn provision_for_command(config: &FleetConfig, command_name: &str) -> Result
             }
 
             if secret.provider == "onepassword" && op_cmd.is_none() {
-                log_warning(&format!(
-                    "Secret '{}' needs 1Password CLI — skipping",
-                    name
-                ));
+                log_warning(&format!("Secret '{}' needs 1Password CLI — skipping", name));
                 continue;
             }
 
@@ -144,7 +137,11 @@ pub fn clean_secret(config: &FleetConfig, name: &str) -> Result<()> {
                     .with_context(|| format!("Failed to remove {}", target.display()))?;
                 log_success(&format!("Secret '{}' removed: {}", name, target.display()));
             } else {
-                log_info(&format!("Secret '{}' not present at {}", name, target.display()));
+                log_info(&format!(
+                    "Secret '{}' not present at {}",
+                    name,
+                    target.display()
+                ));
             }
             Ok(())
         }
@@ -287,7 +284,7 @@ pub fn resolve_sops(base_dir: &std::path::Path, file: &str, key: &str) -> Result
     }
 
     // sops emits a trailing newline for scalar extractions — strip it.
-    let value = String::from_utf8(output.stdout)
-        .with_context(|| "sops output was not valid UTF-8")?;
+    let value =
+        String::from_utf8(output.stdout).with_context(|| "sops output was not valid UTF-8")?;
     Ok(value.trim_end_matches('\n').to_string())
 }

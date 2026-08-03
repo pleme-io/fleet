@@ -39,12 +39,7 @@ pub fn run_pre(
 }
 
 /// Run the post-hook for a command, if configured. Warns on failure but does not abort.
-pub fn run_post(
-    config: &FleetConfig,
-    command_name: &str,
-    node_name: &str,
-    node: &Node,
-) {
+pub fn run_post(config: &FleetConfig, command_name: &str, node_name: &str, node: &Node) {
     if let Some(hook) = config.hooks.get(command_name) {
         if let Some(ref script) = hook.post {
             log_info(&format!(

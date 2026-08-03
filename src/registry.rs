@@ -14,7 +14,7 @@ pub struct Node {
 pub type NodeRegistry = HashMap<String, Node>;
 
 pub fn load_registry() -> Result<NodeRegistry> {
-    let json = std::env::var("FLEET_NODES")
-        .context("FLEET_NODES not set. Run via 'nix run .#fleet'")?;
+    let json =
+        std::env::var("FLEET_NODES").context("FLEET_NODES not set. Run via 'nix run .#fleet'")?;
     serde_json::from_str(&json).context("Failed to parse FLEET_NODES")
 }
