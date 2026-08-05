@@ -50,12 +50,15 @@ impl FleetMcp {
 
     /// Is this node reconciled with its branch, and when did it last try?
     #[tool(description = "Report this node's GitOps convergence: verdict \
-                       (converged/behind/stopped/failing/unknown/notEnrolled), \
-                       the deployed rev, the branch HEAD the reconciler last \
-                       observed, and how long ago it ticked. Reads state the \
-                       reconciler published to disk, so it answers correctly \
-                       even when the daemon is dead — a stopped loop reports \
-                       `stopped`, never silence.")]
+                       (converged/behind/ineffective/stopped/failing/unknown/\
+                       notEnrolled), the deployed rev, the branch HEAD the \
+                       reconciler last observed, and how long ago it ticked. \
+                       Reads state the reconciler published to disk, so it \
+                       answers correctly even when the daemon is dead — a \
+                       stopped loop reports `stopped`, never silence. A loop \
+                       that is pulsing on schedule while resolving no branch \
+                       HEAD reports `ineffective`: alive is not the same as \
+                       working, and a fresh heartbeat proves only the former.")]
     async fn gitops_convergence(
         &self,
         Parameters(ConvergenceInput {}): Parameters<ConvergenceInput>,
@@ -107,7 +110,11 @@ impl ServerHandler for FleetMcp {
              plus how stale that state is. Absent evidence returns the \
              verdict `unknown` — it is never rounded to `converged`, and a \
              tick still running returns `unknown` too rather than claiming a \
-             result that has not happened yet."
+             result that has not happened yet. Evidence that is PRESENT and \
+             bad is not an unknown: a loop whose last finished tick resolved \
+             no branch HEAD returns `ineffective` — pulsing on schedule while \
+             doing no convergence work — which is a distinct state from both \
+             `converged` and a dead loop's `stopped`."
                 .to_owned(),
         );
         info
@@ -149,6 +156,13 @@ mod tests {
         assert!(
             instr.contains("unknown"),
             "the unknown verdict must be documented"
+        );
+        // rio, 2026-08-05: a fresh pulse with `head_rev: null` every 60s for
+        // an hour. An agent reading this tool must know that state has its
+        // own word, or it will read the absence of `stopped` as health.
+        assert!(
+            instr.contains("ineffective"),
+            "the ineffective verdict must be documented"
         );
         assert!(
             instr.contains("never reaches a remote host"),
