@@ -27,7 +27,7 @@
 //! evidence-gated verdict.
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// One node's convergence document. Every field is either MEASURED or
@@ -71,6 +71,81 @@ pub const STOPPED: &str = "stopped";
 pub const FAILING: &str = "failing";
 pub const UNKNOWN: &str = "unknown";
 pub const NOT_ENROLLED: &str = "notEnrolled";
+/// Alive on schedule and doing no convergence work — the state that used to
+/// hide inside `unknown`. The rule, and the rio incident that produced it,
+/// are on [`classify`].
+pub const INEFFECTIVE: &str = "ineffective";
+
+/// Whether the pulse reports a tick that FINISHED or one still running.
+///
+/// Mirrors sentinela's `Phase`, which its own author documents as *"a TYPE,
+/// not a sentinel value in `outcome`: consumers `match` on it"*. This reader
+/// did not match on it — it inferred in-flight-ness from the outcome STRING
+/// against [`IN_FLIGHT_OUTCOMES`], a list whose only member sentinela
+/// actually publishes is `building`. Reading the typed field is both correct
+/// today and durable against a new pending verb.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TickPhase {
+    /// The tick finished; `outcome` names what it did.
+    ///
+    /// The default on purpose, and for sentinela's own stated reason: a
+    /// heartbeat written before this field existed reported a completed
+    /// tick, because a completed tick was the only kind of pulse there was.
+    #[default]
+    Resolved,
+    /// The tick is inside a build that had not returned when the pulse was
+    /// written; `outcome` names the PENDING action, not a completed one.
+    InFlight,
+    /// A phase string this reader does not know, from a newer sentinela.
+    ///
+    /// Kept as a THIRD case rather than folded into `Resolved`: the
+    /// ineffective rule below turns on "the tick finished", and a phase we
+    /// cannot read is not evidence that it did. Folding it into `Resolved`
+    /// would let an unknown-but-benign future phase be reported as a broken
+    /// loop, which is the cry-wolf error wearing a new hat.
+    Unrecognised,
+}
+
+impl TickPhase {
+    /// Map the published string, tolerating both absence and a value from a
+    /// newer sentinela. Deliberately NOT `#[serde(other)]`: serde only
+    /// permits that on internally/adjacently tagged enums, so a plain
+    /// string-valued enum would hard-fail the WHOLE document on an
+    /// unrecognised phase — turning a degraded node into an unreadable one.
+    fn from_wire(raw: Option<&str>) -> Self {
+        match raw {
+            None | Some("resolved") => Self::Resolved,
+            Some("in_flight") => Self::InFlight,
+            Some(_) => Self::Unrecognised,
+        }
+    }
+}
+
+/// The heartbeat as sentinela publishes it, mirrored rather than imported.
+///
+/// EVERY field is optional and defaulted, which is not tidiness: this reader
+/// must read a pulse written by whatever sentinela is on the node, including
+/// one older than this binary. A reader that hard-fails on a missing field
+/// reports a degraded node as an unreadable one — strictly worse than the
+/// degradation it exists to surface.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Heartbeat {
+    /// When the tick completed, unix-millis. `None` only on a malformed pulse.
+    at_unix_ms: Option<u64>,
+    /// The `TickOutcome` variant name — what the loop did (or, in flight,
+    /// what it is doing).
+    outcome: Option<String>,
+    /// Raw phase string; interpreted by [`TickPhase::from_wire`] so an
+    /// unrecognised value degrades this one field instead of the document.
+    phase: Option<String>,
+    /// Branch HEAD as THIS tick observed it. `None` on exactly the three
+    /// sentinela outcomes that never obtained one — see the ineffective rule.
+    head_rev: Option<String>,
+    /// The loop's poll interval. Without it staleness cannot be judged.
+    poll_seconds: Option<u64>,
+}
 
 /// Same budget as `fleet rebuild`'s verdict, `sentinela status --gate` and
 /// seki's `gitops` segment. Four surfaces, one definition of "stale" — if
@@ -109,6 +184,33 @@ const IN_FLIGHT_BUDGET_SECS: u64 = 45 * 60;
 
 /// Decide a verdict from already-read values. Pure, so every arm is
 /// provable without a node, a clock, or a filesystem.
+///
+/// ── ★ A FRESH PULSE PROVES ALIVE, NOT EFFECTIVE ─────────────────────────
+/// Measured on rio, 2026-08-05: sentinela published
+/// `{"outcome":"probeError","phase":"resolved","head_rev":null,
+/// "poll_seconds":60}` every 60 seconds for over an hour. systemd said
+/// `active (running)`, `NRestarts=0`, `systemctl --failed` was empty, and
+/// the pulse was never once stale. The node had not reconciled a single
+/// time — it had never even resolved the branch head.
+///
+/// This function did not round that up to `converged` (the rev comparison
+/// requires a head, and there was none). It returned `unknown` — *"the
+/// reconciler published no branch HEAD; cannot prove convergence"* — which
+/// is a MISSING-EVIDENCE sentence for a node whose evidence was present and
+/// damning. `unknown` is reserved for "we cannot tell"; a loop that told us,
+/// on schedule, that it did nothing is a thing we CAN tell.
+///
+/// The failure had no other detector either. `failing` is sourced from the
+/// receipt chain, and `probeError`/`unresolvable` carry no `Rev`, so they
+/// structurally cannot write a receipt — an infinitely-probe-erroring loop
+/// is invisible to the chain by construction, not by accident.
+///
+/// So the rule, and it is derived from sentinela's type rather than from a
+/// list of verbs: `TickOutcome::observed_head` returns `None` for exactly
+/// `CoolingDown`, `Unresolvable` and `ProbeError`. A FINISHED tick with no
+/// head is therefore, exhaustively, a tick that did no convergence work —
+/// and a future sentinela verb of the same shape is caught the day it ships,
+/// with no edit here.
 #[must_use]
 pub fn classify(
     deployed: Option<&str>,
@@ -117,6 +219,7 @@ pub fn classify(
     poll_seconds: Option<u64>,
     failures: Option<u64>,
     last_outcome: Option<&str>,
+    phase: TickPhase,
 ) -> (&'static str, Option<String>) {
     // Two DIFFERENT unknowns, and saying the wrong one is the same defect
     // this whole surface exists to remove: an earlier draft reported "no
@@ -141,7 +244,11 @@ pub fn classify(
         }
     };
     // What the reconciler said it was doing decides which budget applies.
-    let in_flight = last_outcome.is_some_and(|o| IN_FLIGHT_OUTCOMES.contains(&o));
+    // The typed phase is authoritative; the outcome-name list stays as a
+    // fallback for a pulse from a sentinela older than the `phase` field,
+    // which is the one case where the string is all there is.
+    let in_flight = phase == TickPhase::InFlight
+        || last_outcome.is_some_and(|o| IN_FLIGHT_OUTCOMES.contains(&o));
     let budget = if in_flight {
         IN_FLIGHT_BUDGET_SECS
     } else {
@@ -173,6 +280,38 @@ pub fn classify(
             )),
         );
     }
+    // ── ★ THE MIDDLE STATE: ALIVE, ON SCHEDULE, AND DOING NOTHING ───────
+    // Ordered BEFORE `failing` on purpose. `failing` means the loop got far
+    // enough to attempt a build or a switch and wrote a receipt about it;
+    // this means it never got that far at all, which is the more fundamental
+    // breakage and the one with no other detector. Nothing is lost by the
+    // ordering — the streak, when the chain has one, is folded into the
+    // reason below, so one verdict carries both facts.
+    //
+    // Requires `Resolved` specifically, not `!= InFlight`: an unrecognised
+    // phase is not evidence the tick finished, and claiming a broken loop on
+    // a phase we cannot read would be the cry-wolf error. That case falls
+    // through to `unknown`, which is what it honestly is.
+    if phase == TickPhase::Resolved && head.is_none() {
+        let verb = last_outcome.unwrap_or("?");
+        let history = match deployed {
+            None => "and has never activated a rev".to_owned(),
+            Some(d) => format!("having last activated {}", short(d)),
+        };
+        let streak = match failures.filter(|n| *n > 0) {
+            Some(n) => format!(" · {n} consecutive failed receipts"),
+            None => String::new(),
+        };
+        return (
+            INEFFECTIVE,
+            Some(format!(
+                "tick finished `{verb}` without resolving a branch HEAD: the loop is alive \
+                 ({age}s ago against a {poll}s poll) but did no convergence work, {history}\
+                 {streak}. Evidence covers the LAST tick only — the pulse carries no \
+                 ineffective-since stamp, so how long this has run cannot be read from it"
+            )),
+        );
+    }
     if let Some(n) = failures.filter(|n| *n > 0) {
         return (FAILING, Some(format!("{n} consecutive failed ticks")));
     }
@@ -189,9 +328,28 @@ pub fn classify(
         // path to `converged`, and it requires the head probe — absence of
         // bad news is not evidence of convergence.
         (Some(_), Some(_)) => (CONVERGED, None),
+        // A head, but nothing ever activated: enrolled and not yet arrived.
+        // Distinct from `ineffective` — this loop IS resolving heads, so it
+        // is working; it simply has no activation to show yet.
+        (None, Some(h)) => (
+            UNKNOWN,
+            Some(format!(
+                "the reconciler observed branch HEAD {} but the receipt chain records no \
+                 activation; this node has never deployed",
+                short(h)
+            )),
+        ),
+        // Head-less and the phase did not say the tick finished, so the
+        // ineffective rule above deliberately declined to fire. We cannot
+        // tell a still-running tick from a fruitless one: say so.
         _ => (
             UNKNOWN,
-            Some("the reconciler published no branch HEAD; cannot prove convergence".to_owned()),
+            Some(format!(
+                "the reconciler published no branch HEAD, and this reader does not recognise \
+                 the phase it published, so whether the tick even finished cannot be \
+                 determined (outcome `{}`)",
+                last_outcome.unwrap_or("?")
+            )),
         ),
     }
 }
@@ -215,32 +373,28 @@ pub fn local(state_dir: &Path, node: String, now_epoch: u64) -> NodeConvergence 
             consecutive_failures: None,
         };
     }
-    let beat = read_json(&state_dir.join("heartbeat.json"));
-    let tick_at_ms = beat.as_ref().and_then(|v| v["at_unix_ms"].as_u64());
-    let outcome = beat
-        .as_ref()
-        .and_then(|v| v["outcome"].as_str())
-        .map(str::to_owned);
-    let head_rev = beat
-        .as_ref()
-        .and_then(|v| v["head_rev"].as_str())
-        .map(str::to_owned);
-    let age = tick_at_ms.map(|ms| now_epoch.saturating_sub(ms / 1000));
+    let beat = read_heartbeat(&state_dir.join("heartbeat.json"));
+    let age = beat
+        .at_unix_ms
+        .map(|ms| now_epoch.saturating_sub(ms / 1000));
+    let phase = TickPhase::from_wire(beat.phase.as_deref());
 
     let (deployed_rev, failures) = read_chain_tail(&state_dir.join("receipts.json"));
-    // The poll interval is published by the daemon alongside its config; a
-    // reader that guessed one would manufacture a staleness verdict out of
-    // a number nobody wrote down.
-    let poll = beat.as_ref().and_then(|v| v["poll_seconds"].as_u64());
 
     let (verdict, reason) = classify(
         deployed_rev.as_deref(),
-        head_rev.as_deref(),
+        beat.head_rev.as_deref(),
         age,
-        poll,
+        // The poll interval is published by the daemon alongside its config;
+        // a reader that guessed one would manufacture a staleness verdict
+        // out of a number nobody wrote down.
+        beat.poll_seconds,
         failures,
-        outcome.as_deref(),
+        beat.outcome.as_deref(),
+        phase,
     );
+    let head_rev = beat.head_rev;
+    let outcome = beat.outcome;
     NodeConvergence {
         node,
         engine: "sentinela",
@@ -254,8 +408,15 @@ pub fn local(state_dir: &Path, node: String, now_epoch: u64) -> NodeConvergence 
     }
 }
 
-fn read_json(path: &Path) -> Option<serde_json::Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+/// Read the pulse, degrading to an all-`None` [`Heartbeat`] rather than
+/// erroring. An absent or corrupt file is itself evidence — it lands as
+/// "no heartbeat published", which [`classify`] already reports as `unknown`
+/// with the correct sentence.
+fn read_heartbeat(path: &Path) -> Heartbeat {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 /// `(last_activated_rev, consecutive_failures)` from the chain's TAIL.
@@ -358,6 +519,11 @@ mod tests {
     const REV: &str = "7176c2181d217e1beec7aa3e5244f620ac26dca7";
     const HEAD: &str = "588cf40f6bc7b603943741a2abd074cfaf2142cd";
 
+    /// A finished tick, which is what every pre-`phase` heartbeat reported
+    /// and what most of these cases are about. Spelled out so the ONE case
+    /// that turns on the phase reads as deliberate rather than incidental.
+    const DONE: TickPhase = TickPhase::Resolved;
+
     /// cid, 2026-08-02: silent 16.7h against a 60s poll while every other
     /// surface reported it healthy.
     #[test]
@@ -369,6 +535,7 @@ mod tests {
             Some(POLL),
             Some(0),
             Some("converged"),
+            DONE,
         );
         assert_eq!(v, STOPPED);
         assert!(why.unwrap().contains("stopped, not idle"));
@@ -383,6 +550,7 @@ mod tests {
             Some(POLL),
             Some(0),
             Some("converged"),
+            DONE,
         );
         assert_eq!(v, BEHIND);
         let why = why.unwrap();
@@ -401,6 +569,7 @@ mod tests {
             Some(POLL),
             Some(4136),
             Some("converged"),
+            DONE,
         );
         assert_eq!(v, FAILING);
         assert!(why.unwrap().contains("4136"));
@@ -417,7 +586,8 @@ mod tests {
                 None,
                 Some(POLL),
                 Some(0),
-                Some("converged")
+                Some("converged"),
+                DONE
             )
             .0,
             UNKNOWN
@@ -429,25 +599,12 @@ mod tests {
             None,
             Some(0),
             Some("converged"),
+            DONE,
         );
         assert_eq!(v, UNKNOWN);
         // ...and it must say WHICH unknown. Reporting "no heartbeat" here
         // would contradict the age this very document prints.
         assert!(why.unwrap().contains("no poll interval"));
-        // Alive and not failing, but the daemon published no branch HEAD:
-        // we cannot prove it is at HEAD, so we do not claim it.
-        assert_eq!(
-            classify(
-                Some(REV),
-                None,
-                Some(30),
-                Some(POLL),
-                Some(0),
-                Some("converged")
-            )
-            .0,
-            UNKNOWN
-        );
     }
 
     /// The one path to `converged`, so the vocabulary is not write-only.
@@ -460,6 +617,7 @@ mod tests {
             Some(POLL),
             Some(0),
             Some("converged"),
+            DONE,
         );
         assert_eq!(v, CONVERGED);
         assert!(why.is_none(), "a converged node needs no excuse");
@@ -495,6 +653,7 @@ mod tests {
             Some(60),
             Some(0),
             Some("building"),
+            DONE,
         );
         assert_ne!(v, STOPPED, "a running build is not a stopped loop: {why:?}");
     }
@@ -511,6 +670,7 @@ mod tests {
             Some(60),
             Some(0),
             Some("building"),
+            DONE,
         );
         assert_eq!(v, UNKNOWN, "in-flight must not claim a result: {why:?}");
         assert!(why.expect("reason").contains("in progress"));
@@ -527,6 +687,7 @@ mod tests {
             Some(60),
             Some(0),
             Some("building"),
+            DONE,
         );
         assert_eq!(v, STOPPED, "a hung build must still be caught");
         assert!(why.expect("reason").contains("hang"));
@@ -544,6 +705,7 @@ mod tests {
             Some(POLL),
             Some(0),
             Some("converged"),
+            DONE,
         );
         assert_eq!(v, STOPPED, "a finished tick that never recurred is stopped");
     }
@@ -561,6 +723,7 @@ mod tests {
             Some(POLL),
             Some(0),
             Some("frobnicating"),
+            DONE,
         );
         assert_eq!(v, STOPPED);
     }
@@ -575,7 +738,8 @@ mod tests {
                 Some(budget),
                 Some(POLL),
                 Some(0),
-                Some("converged")
+                Some("converged"),
+                DONE
             )
             .0,
             CONVERGED
@@ -587,10 +751,347 @@ mod tests {
                 Some(budget + 1),
                 Some(POLL),
                 Some(0),
-                Some("converged")
+                Some("converged"),
+                DONE
             )
             .0,
             STOPPED
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // ★ THE INEFFECTIVE LOOP — rio, 2026-08-05
+    //
+    // A fresh heartbeat proves the loop is ALIVE. It says nothing about
+    // whether the loop is EFFECTIVE, and for over an hour on rio those two
+    // facts pointed opposite ways while every surface read the first one.
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Write a state dir and read it back the way the MCP tool does, so
+    /// these cases exercise the PARSER too — the rio pulse's `head_rev:
+    /// null` and `phase: "resolved"` both have to survive deserialization
+    /// for the verdict to be reached at all.
+    fn read_back(name: &str, heartbeat: &str, receipts: Option<&str>, now: u64) -> NodeConvergence {
+        let dir = std::env::temp_dir().join(format!("fleet-convergence-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp state dir");
+        std::fs::write(dir.join("heartbeat.json"), heartbeat).expect("write heartbeat");
+        if let Some(r) = receipts {
+            std::fs::write(dir.join("receipts.json"), r).expect("write receipts");
+        }
+        let doc = local(&dir, "rio".to_owned(), now);
+        let _ = std::fs::remove_dir_all(&dir);
+        doc
+    }
+
+    /// rio's ACTUAL published pulse, verbatim but for the timestamp.
+    fn rio_heartbeat(now: u64) -> String {
+        format!(
+            "{{\"at_unix_ms\":{},\"outcome\":\"probeError\",\"phase\":\"resolved\",\
+             \"head_rev\":null,\"poll_seconds\":60}}",
+            (now - 12) * 1000
+        )
+    }
+
+    /// ★★ THE GATE. rio, 2026-08-05: this exact document, republished every
+    /// 60s for over an hour, while systemd reported `active (running)`,
+    /// `NRestarts=0` and an empty `systemctl --failed`. The node had not
+    /// reconciled once — it had never resolved the branch head.
+    ///
+    /// Before this change the reader returned `unknown` with the sentence
+    /// *"the reconciler published no branch HEAD; cannot prove
+    /// convergence"* — true, but framed as MISSING evidence for a node
+    /// whose evidence was present and damning, and indistinguishable from
+    /// a node whose daemon had simply not published yet.
+    #[test]
+    fn rios_pulsing_loop_that_never_resolved_a_head_is_not_converged() {
+        let now = 1_754_400_000;
+        let doc = read_back("rio-live", &rio_heartbeat(now), None, now);
+
+        // The load-bearing assertion: a fresh pulse is not a health claim.
+        assert_ne!(
+            doc.verdict, CONVERGED,
+            "a loop that never resolved a head must never read as converged: {doc:?}"
+        );
+        // ...and it is not merely unreadable, either. Reporting `unknown`
+        // here understates a KNOWN bad state, which is the round-DOWN error:
+        // an operator filters ambiguity, so a real outage dressed as one
+        // gets filtered with it.
+        assert_eq!(doc.verdict, INEFFECTIVE, "{doc:?}");
+
+        // The pulse was FRESH the whole time — that is the trap this closes.
+        assert_eq!(doc.last_tick_age_secs, Some(12));
+        assert_ne!(doc.verdict, STOPPED, "the daemon was alive and pulsing");
+
+        // The document must carry the evidence, not just the verdict.
+        assert_eq!(doc.last_tick_outcome.as_deref(), Some("probeError"));
+        assert_eq!(doc.head_rev, None, "sentinela published head_rev: null");
+        let why = doc.reason.expect("an ineffective verdict owes a reason");
+        assert!(why.contains("probeError"), "{why}");
+        assert!(why.contains("no convergence work"), "{why}");
+        // Honest about its own reach: one pulse is one sample.
+        assert!(why.contains("LAST tick only"), "{why}");
+    }
+
+    /// The two ineffective loops are NOT the same incident and must not
+    /// read the same. A node that has never activated anything was never
+    /// working; a node that activated an hour ago has REGRESSED. Same
+    /// verdict, different reason — the operator needs the difference to
+    /// know whether to look at bootstrap or at what just changed.
+    ///
+    /// Driven through [`classify`] rather than a chain file on purpose:
+    /// `deployed` is the input that carries this distinction, and pinning
+    /// it here keeps the case independent of how the receipt chain happens
+    /// to be laid out on disk.
+    #[test]
+    fn never_activated_reads_differently_from_regressed() {
+        let virgin = classify(
+            None,
+            None,
+            Some(12),
+            Some(POLL),
+            Some(0),
+            Some("probeError"),
+            DONE,
+        );
+        assert_eq!(virgin.0, INEFFECTIVE);
+        let why = virgin.1.expect("reason");
+        assert!(why.contains("never activated a rev"), "{why}");
+
+        let regressed = classify(
+            Some(REV),
+            None,
+            Some(12),
+            Some(POLL),
+            Some(0),
+            Some("probeError"),
+            DONE,
+        );
+        assert_eq!(regressed.0, INEFFECTIVE);
+        let why = regressed.1.expect("reason");
+        assert!(why.contains("last activated 7176c21"), "{why}");
+        assert!(
+            !why.contains("never activated"),
+            "a node that HAS deployed must not be described as never having: {why}"
+        );
+    }
+
+    /// A failure streak from the chain is FOLDED IN rather than lost.
+    /// `ineffective` outranks `failing` — never resolving a head is the
+    /// more fundamental breakage, and the one with no other detector — so
+    /// the streak has to travel in the reason or the ordering would cost
+    /// the operator a fact.
+    #[test]
+    fn an_ineffective_verdict_still_carries_the_failure_streak() {
+        let (v, why) = classify(
+            Some(REV),
+            None,
+            Some(12),
+            Some(POLL),
+            Some(7),
+            Some("probeError"),
+            DONE,
+        );
+        assert_eq!(v, INEFFECTIVE);
+        assert!(
+            why.expect("reason")
+                .contains("7 consecutive failed receipts"),
+            "the streak must survive the precedence choice"
+        );
+    }
+
+    /// The three states are three, not two. Same node, same reader, three
+    /// pulses — the middle one is the whole point of this change and used
+    /// to be indistinguishable from the third.
+    #[test]
+    fn alive_and_effective_alive_and_ineffective_and_dead_are_three_verdicts() {
+        let working = classify(
+            Some(REV),
+            Some(REV),
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("unchanged"),
+            DONE,
+        )
+        .0;
+        let pulsing = classify(
+            Some(REV),
+            None,
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("probeError"),
+            DONE,
+        )
+        .0;
+        let dead = classify(
+            Some(REV),
+            Some(REV),
+            Some(60177),
+            Some(POLL),
+            Some(0),
+            Some("unchanged"),
+            DONE,
+        )
+        .0;
+        assert_eq!((working, pulsing, dead), (CONVERGED, INEFFECTIVE, STOPPED));
+    }
+
+    /// ★ THE CRY-WOLF GUARD, and the reason the rule keys on the HEAD
+    /// rather than on a list of failure verbs. sentinela's `unchanged` is
+    /// the healthy steady state — the overwhelming majority of all pulses
+    /// in the fleet — and it publishes a head. A reader that flipped those
+    /// to `ineffective` would be wrong on almost every node at once, which
+    /// costs exactly what rounding up costs.
+    #[test]
+    fn the_healthy_steady_state_is_untouched_by_the_ineffective_rule() {
+        for outcome in ["unchanged", "deployed", "deployedBehind"] {
+            let (v, _) = classify(
+                Some(REV),
+                Some(REV),
+                Some(30),
+                Some(POLL),
+                Some(0),
+                Some(outcome),
+                DONE,
+            );
+            assert_eq!(v, CONVERGED, "`{outcome}` resolved a head and is at it");
+        }
+    }
+
+    /// A tick still RUNNING has not failed to resolve a head — it has not
+    /// finished looking. The doctrine's own words: a tick still running
+    /// returns `unknown` rather than claiming a result that has not
+    /// happened yet. That must keep holding now that a second rule also
+    /// looks at a missing head.
+    #[test]
+    fn an_in_flight_tick_is_unknown_not_ineffective() {
+        let (v, why) = classify(
+            Some(REV),
+            None,
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("building"),
+            TickPhase::InFlight,
+        );
+        assert_eq!(v, UNKNOWN, "a running tick has not failed at anything");
+        assert!(why.expect("reason").contains("in progress"));
+    }
+
+    /// ★ THE OTHER CRY-WOLF GUARD. A phase string from a newer sentinela
+    /// is not evidence the tick finished, so it cannot support a claim that
+    /// the tick finished fruitlessly. Round DOWN to `unknown` — and say
+    /// which unknown, so the next reader knows to teach this table the new
+    /// phase rather than to go looking at the node.
+    #[test]
+    fn an_unrecognised_phase_never_claims_ineffective() {
+        let (v, why) = classify(
+            Some(REV),
+            None,
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("someNewVerb"),
+            TickPhase::from_wire(Some("draining")),
+        );
+        assert_eq!(v, UNKNOWN, "an unreadable phase is not proof of failure");
+        assert!(why
+            .expect("reason")
+            .contains("does not recognise the phase"));
+    }
+
+    /// Staleness still outranks everything. An ineffective loop that then
+    /// went silent is STOPPED — the more urgent fact — not ineffective.
+    #[test]
+    fn a_silent_ineffective_loop_is_stopped_not_ineffective() {
+        let (v, _) = classify(
+            Some(REV),
+            None,
+            Some(STALE_AFTER_POLLS * POLL + 1),
+            Some(POLL),
+            Some(0),
+            Some("probeError"),
+            DONE,
+        );
+        assert_eq!(v, STOPPED);
+    }
+
+    /// A head observed but nothing ever activated is a THIRD thing again:
+    /// the loop is working, the node just has not arrived. It must not be
+    /// swept into `ineffective`, and the old shared sentence ("published no
+    /// branch HEAD") was simply false here — it published one.
+    #[test]
+    fn a_working_loop_that_has_never_deployed_is_unknown_not_ineffective() {
+        let (v, why) = classify(
+            None,
+            Some(HEAD),
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("unchanged"),
+            DONE,
+        );
+        assert_eq!(v, UNKNOWN);
+        let why = why.expect("reason");
+        assert!(why.contains("never deployed"), "{why}");
+        assert!(
+            why.contains("588cf40"),
+            "the head it DID observe belongs in the reason: {why}"
+        );
+    }
+
+    /// ★ An older sentinela's pulse must still be READ. `phase` and
+    /// `head_rev` postdate the first heartbeat format; a reader that
+    /// hard-failed on their absence would turn a degraded node into an
+    /// unreadable one, which is worse than the degradation it reports on.
+    /// The default matches sentinela's own: no `phase` means the tick
+    /// finished, because a finished tick was the only pulse there was.
+    #[test]
+    fn a_heartbeat_from_an_older_sentinela_still_reads() {
+        let now = 1_754_400_000;
+        let doc = read_back(
+            "rio-legacy",
+            &format!(
+                "{{\"at_unix_ms\":{},\"outcome\":\"unchanged\",\"poll_seconds\":60}}",
+                (now - 20) * 1000
+            ),
+            None,
+            now,
+        );
+        // Parsed, not swallowed: the age and outcome came off the wire.
+        assert_eq!(doc.last_tick_age_secs, Some(20));
+        assert_eq!(doc.last_tick_outcome.as_deref(), Some("unchanged"));
+        // No head_rev field at all — the same shape as rio's explicit null,
+        // and it must land on the same verdict rather than an error.
+        assert_eq!(doc.verdict, INEFFECTIVE, "{doc:?}");
+    }
+
+    /// A corrupt pulse is not a crash and not a health claim.
+    #[test]
+    fn an_unparseable_heartbeat_is_unknown_not_a_panic() {
+        let now = 1_754_400_000;
+        let doc = read_back("rio-corrupt", "{not json at all", None, now);
+        assert_eq!(doc.verdict, UNKNOWN);
+        assert!(doc
+            .reason
+            .expect("reason")
+            .contains("no heartbeat published"));
+    }
+
+    /// The typed phase is what decides in-flight-ness now; the outcome-name
+    /// list survives only for pulses older than the field. Pinned so a
+    /// future cleanup does not delete the fallback and silently re-break
+    /// the cid 2026-08-03 case.
+    #[test]
+    fn the_phase_wire_mapping_is_total() {
+        assert_eq!(TickPhase::from_wire(None), TickPhase::Resolved);
+        assert_eq!(TickPhase::from_wire(Some("resolved")), TickPhase::Resolved);
+        assert_eq!(TickPhase::from_wire(Some("in_flight")), TickPhase::InFlight);
+        assert_eq!(
+            TickPhase::from_wire(Some("something_new")),
+            TickPhase::Unrecognised
         );
     }
 }
