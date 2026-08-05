@@ -1214,4 +1214,59 @@ mod tests {
             "post-migration nodes write receipts.yaml; got {doc:?}"
         );
     }
+
+    // ── ★ THE OTHER HALF OF THE HEARTBEAT WIRE CONTRACT ─────────────────────
+    //
+    // This repo carries its own view of sentinela's pulse, because the two
+    // views SHOULD differ: sentinela's struct is strict (`at_unix_ms: u64`, a
+    // typed Phase, a typed Rev) so a producer cannot write a malformed pulse,
+    // while this one is all-`Option` + `#[serde(default)]` so a pulse from an
+    // OLDER sentinela degrades a FIELD rather than the whole document. Sharing
+    // one struct would turn a degraded node into an unreadable one — "cannot
+    // parse" and "not converged" are different facts and this reader exists to
+    // keep them apart.
+    //
+    // A single shared crate is also blocked in practice: `sentinela-core` is
+    // not published to crates.io and this crate IS published, so a git dep here
+    // is the documented false-green-release trap.
+    //
+    // So the shared thing is the WIRE. GOLDEN_PULSE below is byte-identical to
+    // the copy in `sentinela-core/src/env.rs` (mod `wire_contract`). A rename
+    // in the producer fails THERE; a reader that stops consuming a field fails
+    // HERE. One literal, two enforcement points — which is the best available
+    // answer while the dependency is closed.
+    const GOLDEN_PULSE: &str = concat!(
+        r#"{"at_unix_ms":1785645747419,"outcome":"unchanged","phase":"resolved","#,
+        r#""head_rev":"cd136f04e14ea67bae9b53491099c63b88a1d3f6","poll_seconds":60}"#
+    );
+
+    #[test]
+    fn the_golden_pulse_populates_every_field_this_reader_uses() {
+        let hb: Heartbeat = serde_json::from_str(GOLDEN_PULSE).expect("golden pulse parses");
+        // Each of these drives a verdict. A field silently arriving as None is
+        // how a reader starts reporting `unknown` about a healthy node — or,
+        // worse, stops noticing an ineffective one.
+        assert_eq!(hb.at_unix_ms, Some(1_785_645_747_419), "staleness");
+        assert_eq!(hb.outcome.as_deref(), Some("unchanged"), "verdict");
+        assert_eq!(
+            hb.phase.as_deref(),
+            Some("resolved"),
+            "finished-vs-in-flight"
+        );
+        assert_eq!(
+            hb.head_rev.as_deref(),
+            Some("cd136f04e14ea67bae9b53491099c63b88a1d3f6"),
+            "the ineffective test — a finished tick with no head did no work"
+        );
+        assert_eq!(hb.poll_seconds, Some(60), "the staleness budget");
+    }
+
+    #[test]
+    fn a_pulse_missing_every_optional_field_still_parses() {
+        // The tolerance that justifies keeping a separate view: an older
+        // producer must remain READABLE, degrading fields rather than the
+        // document.
+        let hb: Heartbeat = serde_json::from_str("{}").expect("an empty object must parse");
+        assert!(hb.at_unix_ms.is_none() && hb.outcome.is_none());
+    }
 }
