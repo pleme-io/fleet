@@ -379,7 +379,24 @@ pub fn local(state_dir: &Path, node: String, now_epoch: u64) -> NodeConvergence 
         .map(|ms| now_epoch.saturating_sub(ms / 1000));
     let phase = TickPhase::from_wire(beat.phase.as_deref());
 
-    let (deployed_rev, failures) = read_chain_tail(&state_dir.join("receipts.json"));
+    // ── ★ BOTH PATHS, CANONICAL FIRST ────────────────────────────────────
+    // sentinela's chain is YAML and was named `receipts.json` from inception —
+    // the heartbeat beside it is genuine JSON, so one directory held two files
+    // disagreeing about what `.json` means. sentinela now writes
+    // `receipts.yaml` and keeps reading the old path (see its
+    // `legacy_receipts_path`), so a node mid-upgrade may have either. Reading
+    // only one would silently report `deployed_rev: None` and
+    // `consecutive_failures: 0` — i.e. a converged-looking node — on whichever
+    // half of the fleet had the other file. Absence of a chain is not evidence
+    // of health.
+    let (deployed_rev, failures) = [
+        state_dir.join("receipts.yaml"),
+        state_dir.join("receipts.json"),
+    ]
+    .iter()
+    .map(|p| read_chain_tail(p))
+    .find(|(rev, fails)| rev.is_some() || fails.is_some_and(|n| n > 0))
+    .unwrap_or((None, None));
 
     let (verdict, reason) = classify(
         deployed_rev.as_deref(),
@@ -452,17 +469,42 @@ fn read_chain_tail(path: &Path) -> (Option<String>, Option<u64>) {
     // mid-document, which a YAML parser would not.
     let mut streak = 0u64;
     let mut activated: Option<String> = None;
-    let mut pending_rev: Option<String> = None;
+    // ── ★ WITHIN ONE ENTRY, `kind:` IS SEEN BEFORE `rev:` GOING BACKWARDS ──
+    // sentinela serialises a receipt as `seq, rev, outcome{kind}, at_unix_ms,
+    // prev_hash` (DeployReceipt). Read in REVERSE that is:
+    //
+    //     prev_hash, at_unix_ms, [newer], kind, rev, seq
+    //
+    // so the `kind:` line arrives BEFORE its own entry's `rev:`. The previous
+    // version captured `rev:` into `pending_rev` and read it when it later hit
+    // `kind:` — which can only ever see the rev of the NEXT-OLDER entry, and on
+    // the newest activation (nothing scanned yet) sees `None`.
+    //
+    // MEASURED on cid 2026-08-05: that chain holds 53 `kind: activated`
+    // entries, and this function returned `deployed_rev: None` for every one.
+    // A reader that reports "this node has never deployed" about a node with 53
+    // recorded activations is the exact round-DOWN this file refuses elsewhere
+    // — and it was invisible because `None` is also the honest answer for a
+    // genuinely fresh node.
+    //
+    // Corrected: remember the `kind:` just seen, and attach the NEXT `rev:`,
+    // which in reverse order is that same entry's rev.
+    let mut pending_kind: Option<String> = None;
     for line in raw.lines().rev() {
         let t = line.trim();
         if let Some(k) = t.strip_prefix("kind:") {
-            if k.trim() == "activated" {
-                activated = pending_rev.clone();
+            let kind = k.trim().to_owned();
+            if kind != "activated" {
+                streak += 1;
+            }
+            pending_kind = Some(kind);
+        } else if let Some(r) = t.strip_prefix("rev:") {
+            // `rev:` closes the entry whose `kind:` we just read.
+            if pending_kind.as_deref() == Some("activated") {
+                activated = Some(r.trim().to_owned());
                 break;
             }
-            streak += 1;
-        } else if let Some(r) = t.strip_prefix("rev:") {
-            pending_rev = Some(r.trim().to_owned());
+            pending_kind = None;
         }
     }
     (activated, Some(streak))
@@ -784,6 +826,25 @@ mod tests {
         doc
     }
 
+    /// Same as [`read_back`] but the chain lands under an explicit FILENAME, so
+    /// a test can put it at the legacy path or the canonical one.
+    fn read_back_chain_at(
+        name: &str,
+        heartbeat: &str,
+        chain_file: &str,
+        chain: &str,
+        now: u64,
+    ) -> NodeConvergence {
+        let dir = std::env::temp_dir().join(format!("fleet-convergence-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp state dir");
+        std::fs::write(dir.join("heartbeat.json"), heartbeat).expect("write heartbeat");
+        std::fs::write(dir.join(chain_file), chain).expect("write chain");
+        let doc = local(&dir, "rio".to_owned(), now);
+        let _ = std::fs::remove_dir_all(&dir);
+        doc
+    }
+
     /// rio's ACTUAL published pulse, verbatim but for the timestamp.
     fn rio_heartbeat(now: u64) -> String {
         format!(
@@ -1092,6 +1153,65 @@ mod tests {
         assert_eq!(
             TickPhase::from_wire(Some("something_new")),
             TickPhase::Unrecognised
+        );
+    }
+
+    // ── The chain filename migration (sentinela 2026-08-05) ─────────────────
+    //
+    // sentinela's chain is YAML and was named `receipts.json` from inception.
+    // It now writes `receipts.yaml` and still reads the old path, so a node
+    // mid-upgrade may have either. Reading only one path would report
+    // `deployed_rev: None` / `consecutive_failures: 0` — a CONVERGED-looking
+    // node — for whichever half of the fleet had the other file. That is the
+    // round-UP this reader exists to refuse.
+
+    /// A fresh pulse that HAS resolved a head, so the verdict turns on the
+    /// chain rather than on the ineffective/unknown logic.
+    fn converged_pulse(now: u64) -> String {
+        format!(
+            "{{\"at_unix_ms\":{},\"outcome\":\"unchanged\",\"phase\":\"resolved\",\
+             \"head_rev\":\"cd136f04e14ea67bae9b53491099c63b88a1d3f6\",\
+             \"poll_seconds\":60}}",
+            (now - 20) * 1000
+        )
+    }
+
+    /// The real on-disk shape, measured on cid 2026-08-05. YAML, despite the
+    /// historical `.json` name.
+    const CHAIN_YAML: &str = "- seq: 0\n  rev: \
+        cd136f04e14ea67bae9b53491099c63b88a1d3f6\n  outcome:\n    kind: \
+        activated\n  at_unix_ms: 1785645747419\n  prev_hash: null\n";
+
+    #[test]
+    fn a_chain_at_the_legacy_json_path_is_still_read() {
+        let now = 1_754_400_000;
+        let doc = read_back_chain_at(
+            "legacy-chain",
+            &converged_pulse(now),
+            "receipts.json",
+            CHAIN_YAML,
+            now,
+        );
+        assert!(
+            doc.deployed_rev.is_some(),
+            "a node that has not yet migrated must not read as chainless: \
+             absence of a chain is not evidence of health. got {doc:?}"
+        );
+    }
+
+    #[test]
+    fn a_chain_at_the_canonical_yaml_path_is_read() {
+        let now = 1_754_400_000;
+        let doc = read_back_chain_at(
+            "canonical-chain",
+            &converged_pulse(now),
+            "receipts.yaml",
+            CHAIN_YAML,
+            now,
+        );
+        assert!(
+            doc.deployed_rev.is_some(),
+            "post-migration nodes write receipts.yaml; got {doc:?}"
         );
     }
 }
