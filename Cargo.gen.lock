@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "09606b91b66f7d057e8e8101312e8749a1da4b10eb2e66d7e8ce2f8d5bb766d7",
+  "cargo_lock_sha256": "db58358590ee80a183d59e7c8795ba113c1948b86d861ebe83fce3db0991c34a",
   "manifest_sha256": {
-    "Cargo.toml": "f0f8dae8f94495be8ea65fbcc6bc923eeb7812693ac90319d6393bcc650c9c84"
+    "Cargo.toml": "1cfc419e8eeb22daff9466176e7d39d15ea5936f9b3a932095599524519f2a41"
   },
   "target_resolves": {
     "base": {
@@ -236,11 +236,11 @@
           "windows-link"
         ]
       },
-      "clap-4.6.5": {
+      "clap-4.6.6": {
         "runtime_dependencies": [
           {
             "name": "clap_builder",
-            "package_key": "clap_builder-4.6.5",
+            "package_key": "clap_builder-4.6.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -272,7 +272,7 @@
           "usage"
         ]
       },
-      "clap_builder-4.6.5": {
+      "clap_builder-4.6.6": {
         "runtime_dependencies": [
           {
             "name": "anstream",
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.14": {
+      "pleme-fleet-0.1.15": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1068,7 +1068,7 @@
           },
           {
             "name": "clap",
-            "package_key": "clap-4.6.5",
+            "package_key": "clap-4.6.6",
             "kind": "normal",
             "features": [
               "cargo",
@@ -3208,7 +3208,7 @@
     "chrono-0.4.45": {
       "edition": "2021"
     },
-    "clap-4.6.5": {
+    "clap-4.6.6": {
       "edition": "2024",
       "binaries": [
         {
@@ -3217,7 +3217,7 @@
         }
       ]
     },
-    "clap_builder-4.6.5": {
+    "clap_builder-4.6.6": {
       "edition": "2024"
     },
     "clap_derive-4.6.4": {
@@ -3334,7 +3334,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.14": {
+    "pleme-fleet-0.1.15": {
       "edition": "2021",
       "binaries": [
         {
