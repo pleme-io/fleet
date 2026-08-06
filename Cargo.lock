@@ -504,6 +504,7 @@ dependencies = [
  "clap",
  "colored",
  "fs4",
+ "libc",
  "rmcp",
  "schemars 0.8.22",
  "serde",

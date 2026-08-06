@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "2110f7083cb11083cbc60bbf037104cb3af4fa25903b984868b250f58eab339d",
+  "cargo_lock_sha256": "09606b91b66f7d057e8e8101312e8749a1da4b10eb2e66d7e8ce2f8d5bb766d7",
   "manifest_sha256": {
-    "Cargo.toml": "00c630c5bd76d176e81d9032bd4685f2be52b8b97173ccb72ed085cac1af6ddf"
+    "Cargo.toml": "f0f8dae8f94495be8ea65fbcc6bc923eeb7812693ac90319d6393bcc650c9c84"
   },
   "target_resolves": {
     "base": {
@@ -1092,6 +1092,16 @@
           {
             "name": "fs4",
             "package_key": "fs4-0.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.189",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

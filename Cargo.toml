@@ -65,6 +65,9 @@ rmcp = { version = "1.4", features = ["server", "transport-io", "macros"] }
 schemars = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 colored = "2.1"
+# kill(2)/getuid(2) for the e2e gate's pty pre-flight — a signal to a pid we
+# selected ourselves, rather than spawning a process to send it.
+libc = "0.2"
 serde_yaml_ng = "0.10"
 fs4 = "0.9"
 

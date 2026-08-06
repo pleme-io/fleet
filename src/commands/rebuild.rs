@@ -1140,6 +1140,14 @@ fn darwin_rebuild(
             .status()
             .map_or(false, |s| s.success());
         if has_app {
+            // The matrix spawns a REAL shell in a REAL pty as its first row, so
+            // an exhausted pty table fails it for a reason that has nothing to
+            // do with the closure — and the failure message below would then
+            // blame the closure. Measured 2026-08-06: 500/511 ptys held by 459
+            // orphaned login shells turned a healthy candidate into "refusing to
+            // switch". Reap first, and say so out loud if the pressure survives.
+            super::pty_guard::preflight();
+
             log_info("e2e gate — driving the candidate closure's mado/frostmourne matrix");
             // CAPTURED, not inherited. The gate is a machine-readable JSON
             // report, and it was being dumped raw into the operator's
@@ -1194,11 +1202,24 @@ fn darwin_rebuild(
                 if !stderr.trim().is_empty() {
                     eprintln!("{}", stderr.trim_end());
                 }
+                // Before blaming the closure, say what the environment looks
+                // like. A pty table with no room fails row 1 for a reason no
+                // diff will explain, and this message used to assert the
+                // closure was at fault with no evidence for that reading.
+                let env_note = match super::pty_guard::measure() {
+                    Ok(p) if p.in_use * 4 >= p.ceiling * 3 => format!(
+                        " NOTE: this host is at {}/{} ptys — a spawn_term failure here is \
+                         very likely pty exhaustion, NOT the closure. Check \
+                         `ls /dev/ttys* | wc -l` against `sysctl kern.tty.ptmx_max`.",
+                        p.in_use, p.ceiling
+                    ),
+                    _ => String::new(),
+                };
                 anyhow::bail!(
                     "e2e gate FAILED — the candidate closure's mado/frostmourne smoke \
                      matrix did not pass; refusing to switch. Inspect with \
                      `nix run .#e2e-mado`; break-glass override: \
-                     FLEET_SKIP_E2E_GATE=1 (document why)."
+                     FLEET_SKIP_E2E_GATE=1 (document why).{env_note}"
                 );
             }
 

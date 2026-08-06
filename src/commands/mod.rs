@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod pangea;
 pub mod ping;
 pub mod pitr_forge;
+pub mod pty_guard;
 pub mod reboot;
 pub mod rebuild;
 pub mod rollback;
