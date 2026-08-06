@@ -13,11 +13,27 @@ resolver = "3"
 # pin. A lockfile pin cannot survive its own release automation; a declaration
 # constrains resolution instead of recording its result.
 #
-# 1.95.0 is the fleet toolchain (`pkgs.fenixRustToolchain`, stable). Declaring
-# the version we actually build with — rather than a lower floor we never test
-# — enforces exactly the failure mode (a dep needing MORE than our rustc)
-# without downgrading anything that works today.
-rust-version = "1.95.0"
+# CORRECTED 2026-08-06 — the sentence that used to sit here, "1.95.0 is the
+# fleet toolchain", was WRONG WHEN WRITTEN and wrong by two minor versions. It
+# was inherited from the incident write-up rather than measured. The fleet's
+# `fenix` input is the literal string `stable` (substrate lib/build/rust/
+# overlay.nix), so the compiler is whatever the locked fenix rev's channel says
+# — today rev d17fa5c0, channel dated 2026-07-16, `rustc 1.97.1`, verified by
+# executing the built toolchain, not by reading a lockfile.
+#
+# So this declaration was never the floor it claimed to be: it was a CEILING
+# two minors BELOW the compiler. Under resolver 3 cargo refuses any crate whose
+# rust-version exceeds the DECLARED one, so we were locked out of every 1.96+
+# and 1.97+ crate while running a compiler that compiles them fine. The
+# mitigation outlived the condition it mitigated.
+#
+# 1.97.0, not 1.97.1, deliberately: one patch of headroom means a fenix rev
+# that lags by a patch cannot re-create the exact "dep needs more than our
+# rustc" failure this block exists to prevent. The compiler floats with no gate
+# — it moved 1.96.0 -> 1.97.0 -> 1.97.1 on routine `nix flake update` commits,
+# unannounced, with no attributable breakage — so the declaration must tolerate
+# it moving under us.
+rust-version = "1.97.0"
 name = "pleme-fleet"
 version = "0.1.13"
 edition = "2021"
