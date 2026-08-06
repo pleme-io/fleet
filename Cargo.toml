@@ -1,4 +1,23 @@
 [package]
+resolver = "3"
+# ── ★ MSRV IS ENFORCED, NOT DECORATIVE ──────────────────────────────────
+# `rust-version` alone does NOTHING under resolver 2 (the edition-2021
+# default): cargo ignores it when selecting dependency versions. Both lines
+# are required, and resolver 3 is the half that binds.
+#
+# MEASURED 2026-08-05/06: `kstring@2.0.4` (requires rustc 1.96.0) entered
+# codesearch's lockfile, and because codesearch is in every node's
+# home-manager closure it stopped the ENTIRE fleet rebuilding — rio sat on a
+# stale generation for six hours. It was pinned back with `cargo update
+# --precise`, and the very next release regenerated the lock and REVERTED the
+# pin. A lockfile pin cannot survive its own release automation; a declaration
+# constrains resolution instead of recording its result.
+#
+# 1.95.0 is the fleet toolchain (`pkgs.fenixRustToolchain`, stable). Declaring
+# the version we actually build with — rather than a lower floor we never test
+# — enforces exactly the failure mode (a dep needing MORE than our rustc)
+# without downgrading anything that works today.
+rust-version = "1.95.0"
 name = "pleme-fleet"
 version = "0.1.12"
 edition = "2021"
