@@ -5,6 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use super::utils::{
     log_info, log_success, log_warning, rebuild_timeout, run_command, run_command_output,
@@ -118,6 +119,109 @@ fn acquire_rebuild_lock() -> Result<File> {
 /// costs nothing when uncontended.
 const REBUILD_LOCK_PATH: &str = "/tmp/fleet-rebuild.lock";
 
+/// How long a blocked rebuild waits for the lock before giving up with a
+/// typed failure.
+///
+/// Deliberately generous: a cold rebuild of this fleet legitimately runs
+/// past an hour (2026-08-07: a single tick spent ~90 minutes compiling
+/// `wgpu` and `vigy_store` under `nice`), so a short bound would turn a
+/// healthy peer into a spurious error — the failure mode that teaches
+/// operators to pass `--force`.
+///
+/// Override with `FLEET_REBUILD_LOCK_TIMEOUT_SECS`; `0` restores the old
+/// unbounded wait for anyone who genuinely wants it.
+const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// How often a blocked rebuild re-reports who it is waiting on.
+const LOCK_WAIT_REPORT_EVERY: Duration = Duration::from_secs(60);
+
+/// Read the holder line the current owner stamped into the lock file.
+fn describe_holder(lock_path: &Path) -> String {
+    match fs::read_to_string(lock_path) {
+        Ok(h) if !h.trim().is_empty() => h.trim().to_owned(),
+        _ => "holder unknown".to_owned(),
+    }
+}
+
+/// Block for the lock, but **bounded, and never silently**.
+///
+/// ── ★ WHY THIS IS NOT `FileExt::lock_exclusive` ──
+/// It used to be, and the sibling comment above already named the defect
+/// it left open: *"a bare waiting... with no identity and no timeout is the
+/// thing that makes a blocked interactive rebuild feel hung."* That comment
+/// shipped with the identity half implemented and the timeout half not, so
+/// a blocked rebuild waited on `lock_exclusive` **forever**, printed one
+/// line, and never spoke again.
+///
+/// MEASURED on rio 2026-08-07, which is why this is phase 0b of
+/// `theory/BALIZA.md` and not a nicety: an operator rebuild and the
+/// `sentinela` reconciler tick collided; sentinela's tick sat **36 minutes
+/// against a 60-second poll** with its child at zero CPU. Anything that
+/// then reached for this lock would have blocked behind a wedged holder
+/// with no output, no deadline and no way to tell the two apart from the
+/// terminal. A hang must degrade into a **typed failure**
+/// (`theory/RECONCILER-LIVENESS.md` P1), and silence is the part that makes
+/// a hang expensive — the operator cannot act on what they cannot see.
+///
+/// So: poll, re-announce the holder every
+/// [`LOCK_WAIT_REPORT_EVERY`], and convert the deadline into an error that
+/// names who we waited on and how long.
+///
+/// TIER: only-mitigated. This bounds *our* wait; it does not bound the
+/// holder's work, and a holder that wedges still wedges — it just stops
+/// being invisible and stops being unbounded for everyone behind it.
+/// Bounding the holder is `despacho`'s job (`theory/DESPACHO.md`), where
+/// the ask carries a mandatory deadline of its own.
+fn wait_for_lock(file: &File, lock_path: &Path) -> Result<()> {
+    let timeout = std::env::var("FLEET_REBUILD_LOCK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(LOCK_WAIT_TIMEOUT, Duration::from_secs);
+
+    // An explicit 0 means "wait forever" — the pre-2026-08-07 behaviour,
+    // kept reachable rather than deleted (★★ MODULARIZE, DON'T DELETE) so
+    // an operator who knows their peer is healthy is not forced to fight
+    // the bound.
+    if timeout.is_zero() {
+        return FileExt::lock_exclusive(file).context("failed to acquire rebuild lock");
+    }
+
+    let started = Instant::now();
+    let mut last_report = Instant::now();
+    loop {
+        if FileExt::try_lock_exclusive(file).is_ok() {
+            return Ok(());
+        }
+        let waited = started.elapsed();
+        if waited >= timeout {
+            anyhow::bail!(
+                "gave up waiting for the rebuild lock after {}s — held by {}.\n\
+                 \n\
+                 The holder is either doing legitimate long work (a cold build of \
+                 this fleet can exceed an hour) or it is wedged. Check it before \
+                 forcing anything:\n\
+                 \n    ps -o pid,etimes,stat,args -p <holder pid>\n\
+                 \n\
+                 A holder at zero CPU in state S with no build children is wedged; \
+                 kill it and re-run. To wait longer, set \
+                 FLEET_REBUILD_LOCK_TIMEOUT_SECS (0 waits forever).",
+                waited.as_secs(),
+                describe_holder(lock_path),
+            );
+        }
+        if last_report.elapsed() >= LOCK_WAIT_REPORT_EVERY {
+            log_info(&format!(
+                "still waiting for the rebuild lock ({}s elapsed, {}s left) — held by {}",
+                waited.as_secs(),
+                timeout.saturating_sub(waited).as_secs(),
+                describe_holder(lock_path),
+            ));
+            last_report = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 /// `acquire_rebuild_lock`'s path-parameterized core — split out so tests
 /// can exercise real flock contention against a throwaway path instead of
 /// the machine-wide [`REBUILD_LOCK_PATH`] every real invocation uses.
@@ -145,14 +249,11 @@ fn acquire_lock_at(lock_path: &Path) -> Result<File> {
         // Name the holder. A bare "waiting..." with no identity and no timeout
         // is the thing that makes a blocked interactive rebuild feel hung —
         // the operator cannot tell a live peer from a wedged one.
-        match fs::read_to_string(lock_path) {
-            Ok(h) if !h.trim().is_empty() => log_info(&format!(
-                "Another rebuild is already in progress ({}) — waiting for it to finish...",
-                h.trim()
-            )),
-            _ => log_info("Another rebuild is already in progress — waiting for it to finish..."),
-        }
-        FileExt::lock_exclusive(&file).context("failed to acquire rebuild lock")?;
+        log_info(&format!(
+            "Another rebuild is already in progress ({}) — waiting for it to finish...",
+            describe_holder(lock_path)
+        ));
+        wait_for_lock(&file, lock_path)?;
     }
     // Stamp our identity for the next waiter to read. Truncate first: the
     // previous holder's line is stale the moment we own the lock.
@@ -1433,6 +1534,68 @@ mod rebuild_lock_tests {
         let result = handle.join().expect("thread panicked");
         assert_eq!(result, "acquired");
 
+        let _ = fs::remove_file(&path);
+    }
+
+    /// The bound exists, it fires, and it names who it waited on.
+    ///
+    /// This is the regression for the 2026-08-07 rio incident
+    /// (`theory/BALIZA.md` phase 0b): the previous code called
+    /// `FileExt::lock_exclusive`, which blocks FOREVER. A rebuild queued
+    /// behind a wedged holder printed one line and never spoke again, and
+    /// the operator had no way to tell a healthy long build from a wedge.
+    ///
+    /// A hang must degrade into a typed failure. `FLEET_REBUILD_LOCK_
+    /// TIMEOUT_SECS=1` against a lock nobody ever releases proves it does.
+    ///
+    /// RED-RUN RECEIPT (2026-08-07): reverting `wait_for_lock` to a bare
+    /// `FileExt::lock_exclusive(file)` hangs this test until the harness
+    /// kills it — which is exactly the defect, observed.
+    #[test]
+    fn waiting_for_a_never_released_lock_fails_typed_instead_of_hanging() {
+        let path = fresh_lock_path("bounded");
+        // Held for the whole test, never dropped before the assertion —
+        // this stands in for a wedged peer.
+        let _held = acquire_lock_at(&path).expect("first acquire");
+
+        // SAFETY: single-threaded section of this test; the guard below
+        // restores the prior value before any other lock test runs.
+        unsafe { std::env::set_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS", "1") };
+
+        let started = Instant::now();
+        let err = acquire_lock_at(&path).expect_err("must not hang, must fail typed");
+        let elapsed = started.elapsed();
+
+        unsafe { std::env::remove_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS") };
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("gave up waiting for the rebuild lock"),
+            "the error must say the wait was BOUNDED, got: {msg}"
+        );
+        assert!(
+            msg.contains("held by"),
+            "the error must name the holder so the operator can inspect it, got: {msg}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "the bound must actually fire; waited {elapsed:?}"
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    /// `0` restores the pre-2026-08-07 unbounded wait — the escape hatch
+    /// stays reachable rather than deleted (★★ MODULARIZE, DON'T DELETE).
+    /// Proven by acquiring an UNCONTENDED lock with the bound disabled: it
+    /// must still succeed, i.e. the zero path is wired, not a dead branch.
+    #[test]
+    fn timeout_zero_selects_the_unbounded_path() {
+        let path = fresh_lock_path("unbounded-opt-in");
+        unsafe { std::env::set_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS", "0") };
+        let got = acquire_lock_at(&path);
+        unsafe { std::env::remove_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS") };
+        assert!(got.is_ok(), "uncontended acquire must succeed with the bound disabled");
         let _ = fs::remove_file(&path);
     }
 
