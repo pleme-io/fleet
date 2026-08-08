@@ -288,6 +288,39 @@ fn get_hostname() -> Result<String> {
 }
 
 /// Check whether a command exists in PATH.
+/// Resolve a rebuild driver to its ABSOLUTE system path, falling back to the
+/// bare name when that path is absent.
+///
+/// ── ★ `sudo <bare name>` IS NOT THE PATH YOU MEASURED ──────────────────────
+/// `sudo nixos-rebuild` does not resolve through the caller's PATH. sudo
+/// replaces it with `secure_path` from sudoers, so the binary that runs is
+/// whatever ROOT's restricted path finds — which on a NixOS machine is not
+/// guaranteed to include `/run/current-system/sw/bin` at all.
+///
+/// This file already carries the receipt for the same class on the other arm:
+/// `darwin-rebuild` lives only in the system profile, and a calling shell that
+/// lacks it makes `command_exists("darwin-rebuild")` return false and *wrongly
+/// drive the first-run bootstrap path*. That was mitigated by hardening PATH
+/// rather than by asking a question PATH cannot answer wrongly.
+///
+/// sentinela already resolves this the reliable way — `RebuildTool::binary()`
+/// returns `/run/current-system/sw/bin/nixos-rebuild` — so this reuses the
+/// model the daemon has been running in production rather than inventing one.
+///
+/// TIER: only-mitigated. The fallback keeps today's behaviour on a machine
+/// where the system profile is missing, so this removes a PATH ASSUMPTION
+/// without introducing a new way to fail closed. A machine with no
+/// `/run/current-system` is being bootstrapped, and the bare name is the right
+/// answer there.
+fn rebuild_driver(name: &str) -> String {
+    let absolute = format!("/run/current-system/sw/bin/{name}");
+    if PathBuf::from(&absolute).exists() {
+        absolute
+    } else {
+        name.to_owned()
+    }
+}
+
 fn command_exists(name: &str) -> bool {
     Command::new("which")
         .arg(name)
@@ -1383,7 +1416,7 @@ fn nixos_rebuild(
     log_info(&format!("NixOS rebuild for {}...", hostname));
 
     let mut cmd = Command::new("sudo");
-    cmd.arg("nixos-rebuild")
+    cmd.arg(rebuild_driver("nixos-rebuild"))
         .arg("switch")
         .arg("--flake")
         .arg(format!(".#{}", hostname))
@@ -1551,6 +1584,43 @@ mod rebuild_lock_tests {
     /// RED-RUN RECEIPT (2026-08-07): reverting `wait_for_lock` to a bare
     /// `FileExt::lock_exclusive(file)` hangs this test until the harness
     /// kills it — which is exactly the defect, observed.
+    /// The absolute form is used when the system profile carries the driver.
+    ///
+    /// Measured on rio 2026-08-07: `/run/current-system/sw/bin/nixos-rebuild`
+    /// resolves to the nixos-rebuild-ng store path, so this branch is the live
+    /// one on every managed NixOS node — which is exactly where `sudo`'s
+    /// `secure_path` would otherwise decide for us.
+    #[test]
+    fn rebuild_driver_prefers_the_system_profile_path() {
+        // Only meaningful where a system profile exists; on a machine without
+        // one the fallback test below is the relevant half.
+        if PathBuf::from("/run/current-system/sw/bin/nixos-rebuild").exists() {
+            assert_eq!(
+                rebuild_driver("nixos-rebuild"),
+                "/run/current-system/sw/bin/nixos-rebuild",
+                "a managed node must not leave the driver to sudo's secure_path"
+            );
+        }
+    }
+
+    /// FAILS OPEN, deliberately. A machine with no system profile is being
+    /// bootstrapped, and the bare name is the correct answer there — this must
+    /// never turn a missing path into a hard failure, because that would brick
+    /// adoption to fix a PATH assumption.
+    ///
+    /// RED-RUN RECEIPT (2026-08-07): making the fallback branch return an
+    /// absolute path unconditionally turns this red with a `/run/current-system`
+    /// prefix on a name that does not exist there.
+    #[test]
+    fn rebuild_driver_falls_back_to_the_bare_name() {
+        let absent = "definitely-not-a-real-rebuild-driver-xyz";
+        assert_eq!(
+            rebuild_driver(absent),
+            absent,
+            "an unbootstrapped machine must still get a runnable argv"
+        );
+    }
+
     #[test]
     fn waiting_for_a_never_released_lock_fails_typed_instead_of_hanging() {
         let path = fresh_lock_path("bounded");
