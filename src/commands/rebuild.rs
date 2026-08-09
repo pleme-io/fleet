@@ -143,6 +143,62 @@ fn describe_holder(lock_path: &Path) -> String {
     }
 }
 
+/// The pid stamped into the lock by its current holder, if the line parses.
+///
+/// The stamp is `pid <N> · <user>` (written at the end of `acquire_lock_at`),
+/// so this reads the second whitespace-separated field. A file that does not
+/// parse is treated as having no pid — which routes to the stale branch,
+/// correctly: a lock nobody stamped is not a lock anyone is holding.
+fn holder_pid(lock_path: &Path) -> Option<u32> {
+    let text = fs::read_to_string(lock_path).ok()?;
+    let mut parts = text.split_whitespace();
+    if parts.next()? != "pid" {
+        return None;
+    }
+    parts.next()?.parse().ok()
+}
+
+/// Is that pid still around?
+///
+/// `kill(pid, 0)` is the portable liveness probe: it performs the permission
+/// checks and target lookup without delivering a signal. `EPERM` counts as
+/// ALIVE — the process exists, we simply may not signal it, which is exactly
+/// the root-holds-the-lock case this function is here to judge.
+fn pid_is_alive(pid: u32) -> bool {
+    // SAFETY: `kill` with signal 0 delivers nothing; it only reports whether
+    // the pid exists and is signallable.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Remove a lock file we cannot unlink as ourselves.
+///
+/// `/tmp` is sticky, so only the owner (or root) may unlink. We escalate
+/// rather than fail, because the alternative is telling an operator to run
+/// the same command by hand — which is not a safety boundary, just a worse
+/// user experience with identical consequences.
+fn clear_stale_lock(lock_path: &Path) -> Result<()> {
+    if fs::remove_file(lock_path).is_ok() {
+        return Ok(());
+    }
+    let status = std::process::Command::new("sudo")
+        .arg("rm")
+        .arg("-f")
+        .arg(lock_path)
+        .status()
+        .with_context(|| format!("could not run sudo to clear {}", lock_path.display()))?;
+    anyhow::ensure!(
+        status.success(),
+        "could not clear the stale rebuild lock at {} — remove it by hand: sudo rm -f {}",
+        lock_path.display(),
+        lock_path.display()
+    );
+    Ok(())
+}
+
 /// Block for the lock, but **bounded, and never silently**.
 ///
 /// ── ★ WHY THIS IS NOT `FileExt::lock_exclusive` ──
@@ -229,12 +285,64 @@ fn acquire_lock_at(lock_path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
         .write(true)
+        // See the note on the retry below: truncation happens after the lock
+        // is held, never at open.
+        .truncate(false)
         .open(lock_path)
-        .with_context(|| {
-            format!(
-                "failed to open rebuild lock file at {}",
-                lock_path.display()
-            )
+        .or_else(|e| {
+            // EACCES means the file EXISTS and belongs to another user with a
+            // mode that excludes us. The 0666 widening below cannot rescue it
+            // — that runs AFTER open — and /tmp is sticky, so a non-owner
+            // cannot unlink it either. Measured on ggg: a fresh account's
+            // `nix run .#rebuild` died here with nothing to do next.
+            //
+            // So REPAIR it, rather than instruct. This command already
+            // escalates for the rebuild itself; clearing a lock it owns the
+            // semantics of is squarely inside that authority.
+            //
+            // The safety test is the holder stamp, not a timeout: the file
+            // records `pid N · user`, so a DEAD pid means the writer is gone
+            // and the lock is debris. A LIVE pid is a real peer and is never
+            // touched — that is the difference between repairing a stale lock
+            // and yanking a running rebuild's.
+            if e.kind() != std::io::ErrorKind::PermissionDenied {
+                return Err(anyhow::Error::new(e).context(format!(
+                    "failed to open rebuild lock file at {}",
+                    lock_path.display()
+                )));
+            }
+            match holder_pid(lock_path) {
+                Some(pid) if pid_is_alive(pid) => Err(anyhow::anyhow!(
+                    "the rebuild lock at {p} is held by a LIVE rebuild ({h}), and its \
+                     mode excludes you.\n\
+                     Wait for it to finish, or if you are sure it is wrong:\n\
+                     \x20   sudo rm -f {p}",
+                    p = lock_path.display(),
+                    h = describe_holder(lock_path)
+                )),
+                _ => {
+                    log_info(&format!(
+                        "Stale rebuild lock at {} ({}) — its writer is gone; clearing it.",
+                        lock_path.display(),
+                        describe_holder(lock_path)
+                    ));
+                    clear_stale_lock(lock_path)?;
+                    OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        // Same reason as the first open: truncation happens
+                        // only once the lock is held.
+                        .truncate(false)
+                        .open(lock_path)
+                        .with_context(|| {
+                            format!(
+                                "failed to open rebuild lock file at {} even after \
+                                 clearing a stale one",
+                                lock_path.display()
+                            )
+                        })
+                }
+            }
         })?;
     // Cross-user reachability: whoever creates the file first owns it, and the
     // other party still has to open it for WRITE to take an exclusive flock. A
@@ -1474,6 +1582,66 @@ fn post_rebuild_cleanup() {
 
 #[cfg(test)]
 mod rebuild_lock_tests {
+
+    // ── stale-lock detection + repair ────────────────────────────────
+    //
+    // Measured on ggg: a fresh NixOS account ran `nix run .#rebuild` and got
+    // `failed to open rebuild lock file at /tmp/fleet-rebuild.lock:
+    // Permission denied`, with nothing to do next — /tmp is sticky so she
+    // could not unlink it, and the 0666 widening runs AFTER open so it could
+    // not rescue it either.
+
+    #[test]
+    fn a_holder_stamp_parses_to_its_pid() {
+        let p = fresh_lock_path("stamp");
+        std::fs::write(&p, "pid 4242 \u{b7} gabi").expect("write");
+        assert_eq!(super::holder_pid(&p), Some(4242));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A file nobody stamped is not a lock anyone holds — it must route to
+    /// the stale branch rather than being mistaken for a live holder.
+    #[test]
+    fn an_unstamped_lock_has_no_pid() {
+        let p = fresh_lock_path("unstamped");
+        std::fs::write(&p, "").expect("write");
+        assert_eq!(super::holder_pid(&p), None);
+        std::fs::write(&p, "garbage from an older format").expect("write");
+        assert_eq!(super::holder_pid(&p), None);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn our_own_pid_is_alive_and_an_absurd_one_is_not() {
+        assert!(super::pid_is_alive(std::process::id()));
+        // Above any plausible pid_max on Linux or macOS.
+        assert!(!super::pid_is_alive(0x7FFF_FFFF));
+    }
+
+    /// THE safety property. A lock whose writer is STILL RUNNING must never
+    /// be cleared — that is the difference between repairing debris and
+    /// yanking a live rebuild's lock out from under it.
+    #[test]
+    fn a_live_holder_is_never_treated_as_stale() {
+        assert!(
+            super::pid_is_alive(std::process::id()),
+            "this test's own pid must read alive, or the guard proves nothing"
+        );
+    }
+
+    /// A stale lock we CAN unlink is repaired without escalating.
+    #[test]
+    fn a_stale_lock_is_cleared_and_the_rebuild_proceeds() {
+        let lock = fresh_lock_path("stale");
+        // A dead pid: the file is debris from a process that is gone.
+        std::fs::write(&lock, "pid 2147483647 \u{b7} root").expect("seed");
+        super::clear_stale_lock(&lock).expect("clear");
+        assert!(!lock.exists(), "the stale lock is gone");
+        // And the normal path then works.
+        let f = super::acquire_lock_at(&lock).expect("acquire after clear");
+        drop(f);
+        let _ = std::fs::remove_file(&lock);
+    }
     use super::*;
     use std::sync::mpsc;
     use std::thread;
@@ -1665,7 +1833,10 @@ mod rebuild_lock_tests {
         unsafe { std::env::set_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS", "0") };
         let got = acquire_lock_at(&path);
         unsafe { std::env::remove_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS") };
-        assert!(got.is_ok(), "uncontended acquire must succeed with the bound disabled");
+        assert!(
+            got.is_ok(),
+            "uncontended acquire must succeed with the bound disabled"
+        );
         let _ = fs::remove_file(&path);
     }
 

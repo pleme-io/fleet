@@ -211,7 +211,9 @@ pub fn preflight() {
     let orphans = match find_orphan_login_shells() {
         Ok(o) => o,
         Err(e) => {
-            log_warning(&format!("pty pre-flight: could not enumerate processes ({e:#})"));
+            log_warning(&format!(
+                "pty pre-flight: could not enumerate processes ({e:#})"
+            ));
             return;
         }
     };
@@ -306,7 +308,10 @@ mod tests {
     #[test]
     fn never_reaps_a_shell_with_a_live_parent() {
         let picked = select_orphans("90863 84137 501 -sh\n", 501);
-        assert!(picked.is_empty(), "a live-parent shell must never be selected");
+        assert!(
+            picked.is_empty(),
+            "a live-parent shell must never be selected"
+        );
     }
 
     /// Another user's orphan is not ours to kill.
