@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "dcb32c1c6625c98b33e483612b534c6cb7bf735ea2f456585a7fa5eae12706ab",
+  "cargo_lock_sha256": "37f84628442da78d2ccebb0ef7bc5ad9eb7917f5b87c41e906940d459e72f1e2",
   "manifest_sha256": {
-    "Cargo.toml": "6713c098d1c02e67b694139bed7d76561912cd957ef9b452fadb8e76850cffd7"
+    "Cargo.toml": "7dc2b0be0832567419e0e2d022c6b48842fa503561a61b60ab8828977117a4af"
   },
   "target_resolves": {
     "base": {
@@ -116,7 +116,7 @@
           "std"
         ]
       },
-      "async-trait-0.1.91": {
+      "async-trait-0.1.92": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.17": {
+      "pleme-fleet-0.1.18": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1277,7 +1277,7 @@
         "runtime_dependencies": [
           {
             "name": "async_trait",
-            "package_key": "async-trait-0.1.91",
+            "package_key": "async-trait-0.1.92",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1400,7 +1400,7 @@
           },
           {
             "name": "thiserror",
-            "package_key": "thiserror-2.0.19",
+            "package_key": "thiserror-2.0.20",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2124,11 +2124,11 @@
           "visit-mut"
         ]
       },
-      "thiserror-2.0.19": {
+      "thiserror-2.0.20": {
         "runtime_dependencies": [
           {
             "name": "thiserror_impl",
-            "package_key": "thiserror-impl-2.0.19",
+            "package_key": "thiserror-impl-2.0.20",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2143,7 +2143,7 @@
           "std"
         ]
       },
-      "thiserror-impl-2.0.19": {
+      "thiserror-impl-2.0.20": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -3189,7 +3189,7 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "async-trait-0.1.91": {
+    "async-trait-0.1.92": {
       "edition": "2021",
       "proc_macro": true
     },
@@ -3334,7 +3334,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.17": {
+    "pleme-fleet-0.1.18": {
       "edition": "2021",
       "binaries": [
         {
@@ -3434,11 +3434,11 @@
     "syn-3.0.3": {
       "edition": "2021"
     },
-    "thiserror-2.0.19": {
+    "thiserror-2.0.20": {
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "thiserror-impl-2.0.19": {
+    "thiserror-impl-2.0.20": {
       "edition": "2021",
       "proc_macro": true
     },
