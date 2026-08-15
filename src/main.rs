@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod dag;
 mod flow;
+mod github_token;
 mod hooks;
 mod registry;
 mod secrets;

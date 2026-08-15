@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+
+use crate::github_token::{self, ResolvedToken, SystemEnv};
 use fs4::fs_std::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
@@ -438,105 +440,114 @@ fn command_exists(name: &str) -> bool {
         .map_or(false, |s| s.success())
 }
 
-/// On first run, Nix needs GitHub auth to fetch private flake inputs.
-/// If `~/.config/nix/netrc` doesn't exist but the SOPS age key does,
-/// decrypt the GitHub token from secrets.yaml and write temporary auth
-/// files so the first `nix build` can succeed. After activation,
-/// sops-nix takes over managing these files.
-fn bootstrap_nix_auth(flake_root: &Path) -> Result<()> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let netrc_path = PathBuf::from(&home).join(".config/nix/netrc");
-    let access_tokens_path = PathBuf::from(&home).join(".config/nix/access-tokens.conf");
-    let age_key_path = PathBuf::from(&home).join(".config/sops/age/keys.txt");
-
-    // Already have auth files — nothing to do
-    if netrc_path.exists() && access_tokens_path.exists() {
-        return Ok(());
+/// Resolve `sops`, building it from nixpkgs if the node does not carry it yet
+/// (a pre-activation node generally does not).
+fn resolve_sops_cmd() -> String {
+    if command_exists("sops") {
+        return "sops".to_string();
     }
-
-    // Need the age key to decrypt secrets
-    if !age_key_path.exists() {
-        log_warning(
-            "No SOPS age key — cannot bootstrap GitHub auth (private flake inputs may fail)",
-        );
-        return Ok(());
+    log_info("sops not in PATH — building from nixpkgs...");
+    match run_command_output(Command::new("nix").args([
+        "--extra-experimental-features",
+        "nix-command flakes",
+        "build",
+        "--print-out-paths",
+        "--no-link",
+        "nixpkgs#sops",
+    ])) {
+        Ok(out) => format!("{out}/bin/sops"),
+        // Non-fatal: resolution simply finds no SOPS source and falls back to
+        // whatever the env / nix.conf already carry.
+        Err(e) => {
+            log_warning(&format!("Could not build sops from nixpkgs: {e}"));
+            "sops".to_string()
+        }
     }
+}
 
-    let secrets_yaml = flake_root.join("secrets.yaml");
-    if !secrets_yaml.exists() {
-        return Ok(());
-    }
+/// Resolve the GitHub token this rebuild will authenticate with, scraping SOPS
+/// when nothing on disk carries one, and seed the bootstrap auth files.
+///
+/// **What changed and why.** This used to return early whenever
+/// `~/.config/nix/netrc` and `access-tokens.conf` both EXISTED — file
+/// existence, not token presence. A node whose credential had gone stale or
+/// rendered empty (the `/run/secrets` freeze in `nodes/rio/CLAUDE.md`) has
+/// both files and no usable token, so the scrape never ran and the rebuild
+/// died on `401 Bad credentials` twenty minutes later, reading as a bad token
+/// rather than as no token. Resolution now asks each source for a token and
+/// keeps going until one answers; see `crate::github_token`.
+///
+/// Returns `None` only when NO source yielded a token — in which case the
+/// probe report is printed, because "which of five places did you look?" is a
+/// question the operator should never have to ask.
+fn resolve_github_token(flake_root: &Path) -> Option<ResolvedToken> {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let user = std::env::var("USER").ok();
 
-    // Resolve sops CLI — use from PATH or build from nixpkgs
-    let sops_cmd = if command_exists("sops") {
-        "sops".to_string()
-    } else {
-        log_info("sops not in PATH — building from nixpkgs...");
-        let out = run_command_output(Command::new("nix").args([
-            "--extra-experimental-features",
-            "nix-command flakes",
-            "build",
-            "--print-out-paths",
-            "--no-link",
-            "nixpkgs#sops",
-        ]))
-        .context("Failed to build sops from nixpkgs")?;
-        format!("{out}/bin/sops")
+    // `resolve_sops_cmd` is passed, not called: it only runs if resolution
+    // actually reaches a SOPS scrape.
+    let env = SystemEnv::new(resolve_sops_cmd);
+    let (token, report) = github_token::resolve(&env, &home, flake_root, user.as_deref());
+
+    let Some(token) = token else {
+        log_warning("No GitHub token found — private flake inputs will fail with HTTP 401.");
+        for line in &report.lines {
+            log_warning(line);
+        }
+        log_warning("Fix: add your PAT with `nix run .#sops-edit-mine` (github/pat), or");
+        log_warning("restore the age key whose PUBLIC half is a recipient of that file.");
+        return None;
     };
 
-    // Decrypt just the GitHub token
-    let token_output = Command::new(&sops_cmd)
-        .args(["--decrypt", "--extract", "[\"github\"][\"ghcr-token\"]"])
-        .arg(&secrets_yaml)
-        .env("SOPS_AGE_KEY_FILE", &age_key_path)
-        .output()
-        .context("Failed to run sops")?;
-
-    if !token_output.status.success() {
-        let stderr = String::from_utf8_lossy(&token_output.stderr);
-        log_warning(&format!(
-            "Could not decrypt GitHub token: {}",
-            stderr.trim()
+    // Only say "scraped" when it actually was one. Announcing a decrypt on
+    // every rebuild would train the operator to ignore the line that matters.
+    if token.source.is_sops() {
+        log_success(&format!(
+            "No usable token on disk — scraped {} from {}",
+            token.redacted(),
+            token.source.describe()
         ));
-        return Ok(());
+    } else {
+        log_info(&format!("GitHub token: {}", token.source.describe()));
     }
 
-    let token = String::from_utf8(token_output.stdout)
-        .context("GitHub token is not valid UTF-8")?
-        .trim()
-        .to_string();
+    seed_bootstrap_auth_files(&home, &token);
+    Some(token)
+}
 
-    if token.is_empty() {
-        log_warning("Decrypted GitHub token is empty — skipping auth bootstrap");
-        return Ok(());
+/// Write `access-tokens.conf` + `netrc` when absent, so the credential
+/// survives into tools this process does not drive (git, curl-shaped
+/// fetchers) and into the next invocation.
+///
+/// Never OVERWRITES: after activation, sops-nix owns these files, and
+/// clobbering a managed file with a bootstrap copy would fight the reconciler
+/// rather than hand off to it. Both are non-fatal — a rebuild whose token
+/// rides on `--option` still succeeds if the seeding fails.
+fn seed_bootstrap_auth_files(home: &Path, token: &ResolvedToken) {
+    let dir = home.join(".config/nix");
+    if let Err(e) = fs::create_dir_all(&dir) {
+        log_warning(&format!("Could not create {}: {e}", dir.display()));
+        return;
     }
 
-    // Write temporary auth files
-    let nix_config_dir = PathBuf::from(&home).join(".config/nix");
-    fs::create_dir_all(&nix_config_dir)?;
-
-    if !access_tokens_path.exists() {
-        fs::write(
-            &access_tokens_path,
-            format!("access-tokens = github.com={token}\n"),
-        )?;
-        fs::set_permissions(&access_tokens_path, fs::Permissions::from_mode(0o600))?;
-        log_success("Bootstrapped ~/.config/nix/access-tokens.conf");
+    for (path, content, label) in [
+        (
+            dir.join("access-tokens.conf"),
+            token.access_tokens_conf(),
+            "access-tokens.conf",
+        ),
+        (dir.join("netrc"), token.netrc(), "netrc"),
+    ] {
+        if path.exists() {
+            continue;
+        }
+        let wrote = fs::write(&path, content)
+            .and_then(|()| fs::set_permissions(&path, fs::Permissions::from_mode(0o600)));
+        match wrote {
+            Ok(()) => log_success(&format!("Bootstrapped ~/.config/nix/{label}")),
+            Err(e) => log_warning(&format!("Could not write {}: {e}", path.display())),
+        }
     }
-
-    if !netrc_path.exists() {
-        fs::write(
-            &netrc_path,
-            format!(
-                "machine api.github.com\nlogin x-access-token\npassword {token}\n\n\
-                 machine github.com\nlogin x-access-token\npassword {token}\n"
-            ),
-        )?;
-        fs::set_permissions(&netrc_path, fs::Permissions::from_mode(0o600))?;
-        log_success("Bootstrapped ~/.config/nix/netrc");
-    }
-
-    Ok(())
 }
 
 /// Install Claude Code via nix profile if not already available.
@@ -1235,12 +1246,11 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
         accept_xcode_license();
     }
 
-    // Bootstrap: decrypt GitHub token from SOPS so Nix can fetch private inputs.
-    // Only runs when auth files are missing (first run). After activation,
-    // sops-nix manages these files permanently.
-    if let Err(e) = bootstrap_nix_auth(&flake_root) {
-        log_warning(&format!("Auth bootstrap: {e} — continuing anyway"));
-    }
+    // Resolve the GitHub token this rebuild authenticates with — env, then
+    // nix.conf, then a SOPS scrape when nothing on disk carries a usable one.
+    // Non-fatal by design: a node may legitimately have no private inputs to
+    // fetch, and refusing to rebuild would be worse than letting nix say so.
+    let github_token = resolve_github_token(&flake_root);
 
     // Ensure Claude Code is available for interactive debugging.
     // On first run this installs it via nix profile so the user can
@@ -1263,9 +1273,36 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     // in that repo; the rebuild path is now sweep-free.
 
     match std::env::consts::OS {
-        "macos" => darwin_rebuild(&flake_root, &hostname, show_trace, nix_options),
-        "linux" => nixos_rebuild(&flake_root, &hostname, show_trace, nix_options),
+        "macos" => darwin_rebuild(
+            &flake_root,
+            &hostname,
+            show_trace,
+            nix_options,
+            github_token.as_ref(),
+        ),
+        "linux" => nixos_rebuild(
+            &flake_root,
+            &hostname,
+            show_trace,
+            nix_options,
+            github_token.as_ref(),
+        ),
         os => anyhow::bail!("Unsupported OS: {}", os),
+    }
+}
+
+/// Append `--option access-tokens github.com=<tok>` to a rebuild invocation.
+///
+/// Threaded through EVERY invocation, not just the first-run bootstrap. The
+/// old code forwarded it only inside the darwin bootstrap branch, so a
+/// steady-state `darwin-rebuild switch` and every single `nixos-rebuild` ran
+/// with whatever nix.conf happened to hold — which is precisely the file that
+/// is stale or empty on the node that needs help.
+fn forward_access_tokens(cmd: &mut Command, token: Option<&ResolvedToken>) {
+    if let Some(token) = token {
+        cmd.arg("--option")
+            .arg("access-tokens")
+            .arg(token.nix_option_value());
     }
 }
 
@@ -1274,6 +1311,7 @@ fn darwin_rebuild(
     hostname: &str,
     show_trace: bool,
     nix_options: &[String],
+    github_token: Option<&ResolvedToken>,
 ) -> Result<()> {
     log_info(&format!("Darwin rebuild for {}...", hostname));
 
@@ -1285,21 +1323,6 @@ fn darwin_rebuild(
     let real_home = std::env::var("HOME").unwrap_or_default();
     let ssl_cert = std::env::var("NIX_SSL_CERT_FILE")
         .unwrap_or_else(|_| "/etc/ssl/certs/ca-certificates.crt".to_string());
-
-    // Read access-tokens from bootstrapped config so nix can fetch private inputs.
-    let access_tokens_path = PathBuf::from(&real_home).join(".config/nix/access-tokens.conf");
-    let access_tokens = if access_tokens_path.exists() {
-        fs::read_to_string(&access_tokens_path)
-            .ok()
-            .and_then(|content| {
-                content
-                    .trim()
-                    .strip_prefix("access-tokens = ")
-                    .map(|v| v.to_string())
-            })
-    } else {
-        None
-    };
 
     // Bootstrap: on first run, darwin-rebuild isn't installed yet.
     // Build the system configuration and activate it directly.
@@ -1324,9 +1347,7 @@ fn darwin_rebuild(
         build_cmd.arg("--option").arg("sandbox").arg("false");
 
         // Forward access-tokens so nix can fetch private flake inputs
-        if let Some(ref tokens) = access_tokens {
-            build_cmd.arg("--option").arg("access-tokens").arg(tokens);
-        }
+        forward_access_tokens(&mut build_cmd, github_token);
 
         // Forward user-provided nix options to the bootstrap build
         for pair in nix_options.chunks(2) {
@@ -1502,7 +1523,12 @@ fn darwin_rebuild(
         cmd.arg("--show-trace");
     }
 
-    // Forward --option key value pairs to darwin-rebuild
+    // Forward the resolved credential to the ACTIVATION build too — sudo drops
+    // the caller's nix.conf, so root's copy is what would otherwise apply.
+    forward_access_tokens(&mut cmd, github_token);
+
+    // Forward --option key value pairs to darwin-rebuild. Last, so an explicit
+    // operator `--option access-tokens …` still wins over the resolved one.
     for pair in nix_options.chunks(2) {
         if pair.len() == 2 {
             cmd.arg("--option").arg(&pair[0]).arg(&pair[1]);
@@ -1520,6 +1546,7 @@ fn nixos_rebuild(
     hostname: &str,
     show_trace: bool,
     nix_options: &[String],
+    github_token: Option<&ResolvedToken>,
 ) -> Result<()> {
     log_info(&format!("NixOS rebuild for {}...", hostname));
 
@@ -1535,7 +1562,14 @@ fn nixos_rebuild(
         cmd.arg("--show-trace");
     }
 
-    // Forward --option key value pairs to nixos-rebuild
+    // The load-bearing line for a PAT-less NixOS bootstrap: the nix daemon runs
+    // as root and reads ROOT's config, so a token the operator holds in their
+    // own nix.conf never reaches this build. Passing it explicitly is what
+    // makes a node with no rendered secret rebuild at all.
+    forward_access_tokens(&mut cmd, github_token);
+
+    // Forward --option key value pairs to nixos-rebuild. Last, so an explicit
+    // operator `--option access-tokens …` still wins over the resolved one.
     for pair in nix_options.chunks(2) {
         if pair.len() == 2 {
             cmd.arg("--option").arg(&pair[0]).arg(&pair[1]);
