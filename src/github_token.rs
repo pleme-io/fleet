@@ -11,12 +11,45 @@
 //! The failure mode this module closes is that the credential can be MISSING
 //! or STALE while every file that should carry it is still present — a node
 //! that has never activated, or one whose `/run/secrets` froze because it
-//! could not rebuild (the stale-token cascade in `nodes/rio/CLAUDE.md`). Both
-//! land as the same unhelpful error, twenty minutes into a build:
+//! could not rebuild (the stale-token cascade in `nodes/rio/CLAUDE.md`).
+//!
+//! ## ★ THE SYMPTOM IS USUALLY 404, NOT 401 — measured 2026-08-16
+//!
+//! This is the diagnostic that costs the most time, because 404 reads as "that
+//! commit is gone" and sends you hunting a bad pin instead of a bad
+//! credential. GitHub answers a private repo with **404, not 403**, so it does
+//! not leak the repo's existence — and the codeload tarball endpoint every
+//! flake input goes through cannot distinguish *no* token from *wrong* token:
+//!
+//! | request                          | codeload tarball |
+//! |----------------------------------|------------------|
+//! | private repo, no token           | **404**          |
+//! | private repo, wrong/expired token| **404**          |
+//! | private repo, good token         | 302              |
+//! | public repo, any token state     | 302              |
+//!
+//! So a real failure looks like this, and the commit named in it exists fine:
 //!
 //! ```text
-//! error: unable to download '…/tarball/…': {"message": "Bad credentials", "status": "401"}
+//! error: unable to download 'https://github.com/pleme-io/ensaio/archive/<rev>.tar.gz':
+//!        HTTP error 404
 //! ```
+//!
+//! `401 Bad credentials` DOES occur, but on the other path — `api.github.com`,
+//! which nix uses to resolve a ref to a rev — and only when a token is present
+//! and rejected. Seeing 401 therefore means "a token is being sent and it is
+//! wrong"; seeing 404 on a private input means "no usable token is being sent"
+//! and says nothing about whether the rev exists.
+//!
+//! Verify which you have with the rev from the error, rather than guessing:
+//!
+//! ```text
+//! curl -so /dev/null -w '%{http_code}\n' https://github.com/<owner>/<repo>/archive/<rev>.tar.gz
+//! curl -so /dev/null -w '%{http_code}\n' -H "Authorization: token $TOK" <same URL>
+//! ```
+//!
+//! 404 then 302 is this module's problem. 404 then 404 is a genuinely missing
+//! rev.
 //!
 //! So: resolve a token from the first source that actually YIELDS one, and if
 //! none of the on-disk ones do, scrape SOPS directly.
@@ -56,9 +89,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Where a token came from. Carried alongside the token so a later 401 can
-/// name the source that produced the credential instead of leaving the
-/// operator to guess which of five places was consulted.
+/// Where a token came from. Carried alongside the token so a later auth
+/// failure can name the source that produced the credential instead of leaving
+/// the operator to guess which of five places was consulted — which matters
+/// most for the 404 case, where the error itself says nothing about auth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenSource {
     /// An environment variable — `GITHUB_TOKEN` or `GH_TOKEN`.
@@ -99,8 +133,8 @@ impl TokenSource {
 ///
 /// There is no constructor that accepts an empty string: every path into this
 /// type goes through a check, so "resolved a token" cannot mean "resolved an
-/// empty string" — the state that produced a 401 reading as bad-credentials
-/// rather than as no-credentials.
+/// empty string" — the state that sends `access-tokens = github.com=` and
+/// then reads as a missing REV rather than a missing credential.
 #[derive(Debug, Clone)]
 pub struct ResolvedToken {
     token: String,
@@ -135,10 +169,9 @@ impl ResolvedToken {
     ///
     /// The host is `github.com`, fixed, with no knob. nix's github fetcher
     /// keys on `github.com=`, NOT `api.github.com=`; a credential filed under
-    /// the api host is invisible to the fetcher and produces the same
-    /// confusing 401 as having no credential at all. Making the host a
-    /// constant is what keeps the wrong one unrepresentable rather than merely
-    /// discouraged.
+    /// the api host is invisible to the fetcher, producing exactly the same
+    /// 404 as having no credential at all. Making the host a constant is what
+    /// keeps the wrong one unrepresentable rather than merely discouraged.
     pub fn nix_option_value(&self) -> String {
         format!("github.com={}", self.token)
     }
@@ -629,7 +662,8 @@ mod tests {
     }
 
     /// sops exits 0 printing nothing when the key holds an empty value; that
-    /// must not resolve to a token that produces a 401 later.
+    /// must not resolve to a token that produces a 404 on the next private
+    /// input, twenty minutes into a build.
     #[test]
     fn an_empty_sops_value_does_not_resolve() {
         let mut env = MockEnv::default();

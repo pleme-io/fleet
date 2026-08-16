@@ -473,9 +473,11 @@ fn resolve_sops_cmd() -> String {
 /// existence, not token presence. A node whose credential had gone stale or
 /// rendered empty (the `/run/secrets` freeze in `nodes/rio/CLAUDE.md`) has
 /// both files and no usable token, so the scrape never ran and the rebuild
-/// died on `401 Bad credentials` twenty minutes later, reading as a bad token
-/// rather than as no token. Resolution now asks each source for a token and
-/// keeps going until one answers; see `crate::github_token`.
+/// died twenty minutes later on an `HTTP 404` for a private input — which does
+/// not look like a credential problem at all, since GitHub hides private repos
+/// behind 404 rather than 403. Resolution now asks each source for a token and
+/// keeps going until one answers; see `crate::github_token`, whose header
+/// carries the measured status-code matrix.
 ///
 /// Returns `None` only when NO source yielded a token — in which case the
 /// probe report is printed, because "which of five places did you look?" is a
@@ -490,7 +492,13 @@ fn resolve_github_token(flake_root: &Path) -> Option<ResolvedToken> {
     let (token, report) = github_token::resolve(&env, &home, flake_root, user.as_deref());
 
     let Some(token) = token else {
-        log_warning("No GitHub token found — private flake inputs will fail with HTTP 401.");
+        // Name the code the operator will actually SEE. A private input with no
+        // credential answers 404, not 401 — and 404 reads as "that commit is
+        // gone", which sends people to check the pin instead of the token.
+        log_warning(
+            "No GitHub token found — private flake inputs will fail with HTTP 404 \
+             (GitHub hides private repos behind 404, so this is NOT a missing rev).",
+        );
         for line in &report.lines {
             log_warning(line);
         }
