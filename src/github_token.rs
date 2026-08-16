@@ -473,6 +473,368 @@ pub fn resolve<E: TokenEnv>(
     (None, ProbeReport { lines })
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// INJECTION — the write half.
+//
+// ★ WHY THIS EXISTS. Everything above RESOLVES a token and renders it into
+// the shape a sink wants; until this block, nothing PERSISTED it. The only
+// consumer was `--option access-tokens` appended to a rebuild's argv, which
+// dies with the process. So every other place that needed a credential on
+// disk grew its own writer: the nix repo alone carries 8 retrieval sites and
+// 13 injection sites, and a hand-typed shell one-liner became the 14th on plo
+// on 2026-08-16. One brain, fourteen hands.
+//
+// The retrieval brain was never the problem. Its position was: it lives
+// inside `fleet`, and the operator reaches `fleet` through `nix run .#rebuild`
+// — which must first EVALUATE a flake with ~160 private inputs, which is the
+// very thing the credential unblocks. The brain stood behind the door it
+// exists to open. Giving it a write half plus a standalone verb is what lets
+// it be called BEFORE nix loads (the repo's `.envrc`), from a PUBLIC flake
+// reference that needs no credential to fetch.
+//
+// ★ TWO TRAPS ENCODED HERE, both measured rather than imagined.
+//
+// 1. A DANGLING SYMLINK IS NOT AN ABSENT FILE. `Path::exists()` FOLLOWS
+//    symlinks, so a link whose target evaporated reads as "absent" — and then
+//    the write through it fails ENOENT rather than creating anything. That is
+//    exactly the darwin steady state: `~/.config/nix/access-tokens.conf` is a
+//    symlink into a 64 MB HFS ramdisk that macOS destroys on every boot. A
+//    seeder that tests `exists()` and then writes is a guaranteed no-op in the
+//    one state it was written for. [`clear_dangling`] separates the cases with
+//    `symlink_metadata` and removes the corpse before writing.
+//
+// 2. AN UNREADABLE `!include` TARGET IS SILENTLY SKIPPED. nix reads an include
+//    as whichever user runs the command and ignores one it cannot open — no
+//    error, no warning, exit 0. Red-run 2026-08-16: a `0400 root:wheel` target
+//    yields EMPTY `access-tokens` and rc=0 for the operator. So the token file
+//    is written 0600 owned by the CALLER, never root-owned on the caller's
+//    behalf, and the write is verified by reading it back.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Is `bin` on `PATH`? A dependency-free `command -v`.
+fn on_path(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
+        .unwrap_or(false)
+}
+
+/// `sops`, building it from nixpkgs if the node does not carry it yet — a
+/// pre-activation node generally does not, and that is exactly when a
+/// credential needs seeding.
+fn default_sops_cmd() -> String {
+    if on_path("sops") {
+        return "sops".to_string();
+    }
+    let out = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "build",
+            "--print-out-paths",
+            "--no-link",
+            "nixpkgs#sops",
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if p.is_empty() {
+                "sops".to_string()
+            } else {
+                format!("{p}/bin/sops")
+            }
+        }
+        // Non-fatal: resolution then finds no SOPS source and falls back to
+        // whatever the env / nix.conf already carry.
+        _ => "sops".to_string(),
+    }
+}
+
+/// The canonical [`SystemEnv`] for production callers.
+///
+/// `commands::rebuild` still carries a private twin of this (it logs through
+/// the fleet loggers, which this module deliberately does not depend on). That
+/// twin should collapse onto this one; it is left alone here only because its
+/// file carries unrelated uncommitted work.
+pub fn system_env() -> SystemEnv {
+    SystemEnv::new(default_sops_cmd)
+}
+
+/// The pair of files one injection touches: the credential itself, and the
+/// nix.conf that points at it.
+///
+/// Kept as a pair rather than a single path because writing the credential
+/// without the `!include` is a silent no-op — nix never looks at a file
+/// nothing references — and that half-done state is indistinguishable from
+/// success unless the two always move together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialTarget {
+    pub token_file: PathBuf,
+    pub nix_conf: PathBuf,
+}
+
+impl CredentialTarget {
+    /// The caller's own config. This is the target that matters for flake
+    /// EVALUATION, which runs as the operator.
+    pub fn user(home: &Path) -> Self {
+        Self {
+            token_file: home.join(".config/nix/access-tokens.conf"),
+            nix_conf: home.join(".config/nix/nix.conf"),
+        }
+    }
+
+    /// Root's config. Separate because `sudo` drops the caller's `HOME`, so
+    /// the sudo'd half of a rebuild reads this one and nothing else.
+    pub fn root() -> Self {
+        Self {
+            token_file: PathBuf::from("/root/.config/nix/access-tokens.conf"),
+            nix_conf: PathBuf::from("/root/.config/nix/nix.conf"),
+        }
+    }
+
+    /// The line nix.conf must carry. Relative when the two files are
+    /// co-located — nix resolves an include against the including file's own
+    /// directory, so the short form is correct and survives the pair being
+    /// moved together.
+    pub fn include_line(&self) -> String {
+        let same_dir = self.token_file.parent() == self.nix_conf.parent();
+        if same_dir {
+            match self.token_file.file_name().and_then(|n| n.to_str()) {
+                Some(name) => format!("!include {name}"),
+                None => format!("!include {}", self.token_file.display()),
+            }
+        } else {
+            format!("!include {}", self.token_file.display())
+        }
+    }
+}
+
+/// What an [`ensure`] call actually did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Injection {
+    /// The credential was already present and current. NOTHING was written.
+    /// This is the common case and the one that makes calling `ensure` from a
+    /// shell hook cheap: one stat plus one read.
+    AlreadyCurrent,
+    /// The credential was written (or rewritten).
+    Wrote,
+}
+
+/// The concrete edit an injection would make. Produced by the PURE
+/// [`plan_injection`] so the decision is testable without a filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InjectionPlan {
+    /// Full new contents for the credential file.
+    pub token_file: String,
+    /// Full new contents for nix.conf, or `None` when it already includes.
+    pub nix_conf: Option<String>,
+}
+
+/// Split an `access-tokens` VALUE into `host=token` entries.
+fn access_tokens_entries(value: &str) -> Vec<(String, String)> {
+    value
+        .split_whitespace()
+        .filter_map(|e| e.split_once('='))
+        .map(|(h, t)| (h.to_string(), t.to_string()))
+        .collect()
+}
+
+/// The `access-tokens` value currently declared in nix.conf-shaped `text`.
+fn access_tokens_value(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix("access-tokens"))
+        .and_then(|rest| rest.trim_start().strip_prefix('='))
+        .map(|v| v.trim().to_string())
+}
+
+/// Upsert `github.com` into an existing `access-tokens` line, PRESERVING every
+/// other host.
+///
+/// A node can legitimately carry a second forge (a GitHub Enterprise host, a
+/// gitlab mirror). Rewriting the whole line from one token would silently
+/// delete those, and the failure would surface much later as an unrelated
+/// fetch failing — so co-resident hosts are carried through untouched.
+fn upsert_github_entry(existing: Option<&str>, token: &ResolvedToken) -> String {
+    // `existing` is the whole FILE, so the value has to be extracted before it
+    // is split into entries. Splitting the raw file instead parses the bare
+    // `=` of `access-tokens = …` as an entry with an empty host, and the
+    // rendered line comes back as `access-tokens = = github.com=…` — which nix
+    // then rejects wholesale, taking the real credential down with it. Caught
+    // by `a_rotated_token_rewrites_the_credential_but_not_the_include`.
+    let value = existing.and_then(access_tokens_value);
+    let mut entries: Vec<(String, String)> = value
+        .as_deref()
+        .map(access_tokens_entries)
+        .unwrap_or_default();
+    let value = token.nix_option_value();
+    let (host, tok) = value.split_once('=').expect("nix_option_value is host=token");
+    match entries.iter_mut().find(|(h, _)| h == host) {
+        Some(slot) => slot.1 = tok.to_string(),
+        None => entries.push((host.to_string(), tok.to_string())),
+    }
+    let rendered: Vec<String> = entries.iter().map(|(h, t)| format!("{h}={t}")).collect();
+    format!("access-tokens = {}\n", rendered.join(" "))
+}
+
+/// PURE: decide what the two files should become. `None` means already
+/// current — the fast path a shell hook takes on every invocation but the
+/// first.
+pub fn plan_injection(
+    current_token_file: Option<&str>,
+    current_nix_conf: Option<&str>,
+    token: &ResolvedToken,
+    target: &CredentialTarget,
+) -> Option<InjectionPlan> {
+    let desired_token_file = upsert_github_entry(current_token_file, token);
+    let token_file_current = current_token_file.is_some_and(|c| c == desired_token_file);
+
+    let want = target.include_line();
+    let nix_conf_current = current_nix_conf
+        .is_some_and(|c| c.lines().any(|l| l.trim() == want));
+
+    if token_file_current && nix_conf_current {
+        return None;
+    }
+
+    let nix_conf = if nix_conf_current {
+        None
+    } else {
+        let mut body = current_nix_conf.unwrap_or_default().to_string();
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&want);
+        body.push('\n');
+        Some(body)
+    };
+
+    Some(InjectionPlan {
+        token_file: desired_token_file,
+        nix_conf,
+    })
+}
+
+/// Remove `path` if — and only if — it is a symlink whose target does not
+/// resolve. See trap 1 in this section's header.
+fn clear_dangling(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() && std::fs::metadata(path).is_err() => {
+            std::fs::remove_file(path)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Write `contents` to `path` with mode 0600, creating parents.
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// What [`ensure`] did, in operator-facing terms. Never carries the token.
+pub struct EnsureReport {
+    pub injection: Injection,
+    pub target: CredentialTarget,
+    pub source: TokenSource,
+    pub redacted: String,
+    /// Dangling symlinks removed to make the write possible. Reported because
+    /// their presence means the sops render evaporated, which the operator
+    /// may want to fix at the source rather than keep papering over.
+    pub cleared: Vec<PathBuf>,
+}
+
+/// Resolve a token and make it present on disk for `target`, idempotently.
+///
+/// This is the one function the whole module exists to offer: retrieve from
+/// wherever a credential can be found, then inject it where nix will actually
+/// read it — with no secret in argv or the environment at any point.
+pub fn ensure<E: TokenEnv>(
+    env: &E,
+    home: &Path,
+    flake_root: &Path,
+    user: Option<&str>,
+    target: &CredentialTarget,
+) -> Result<EnsureReport, String> {
+    let (token, probe) = resolve(env, home, flake_root, user);
+    let token = token.ok_or_else(|| {
+        let mut msg = String::from("no GitHub token could be resolved:\n");
+        for l in &probe.lines {
+            msg.push_str(l);
+            msg.push('\n');
+        }
+        msg
+    })?;
+
+    let mut cleared = Vec::new();
+    for p in [&target.token_file, &target.nix_conf] {
+        match clear_dangling(p) {
+            Ok(true) => cleared.push(p.clone()),
+            Ok(false) => {}
+            Err(e) => return Err(format!("could not clear dangling {}: {e}", p.display())),
+        }
+    }
+
+    let current_token_file = std::fs::read_to_string(&target.token_file).ok();
+    let current_nix_conf = std::fs::read_to_string(&target.nix_conf).ok();
+
+    let plan = plan_injection(
+        current_token_file.as_deref(),
+        current_nix_conf.as_deref(),
+        &token,
+        target,
+    );
+
+    let injection = match plan {
+        None => Injection::AlreadyCurrent,
+        Some(plan) => {
+            write_private(&target.token_file, &plan.token_file)
+                .map_err(|e| format!("could not write {}: {e}", target.token_file.display()))?;
+            if let Some(conf) = plan.nix_conf {
+                if let Some(dir) = target.nix_conf.parent() {
+                    std::fs::create_dir_all(dir)
+                        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+                }
+                std::fs::write(&target.nix_conf, conf)
+                    .map_err(|e| format!("could not write {}: {e}", target.nix_conf.display()))?;
+            }
+            // Verify by reading back. A write that reports success and leaves
+            // nothing readable is precisely the failure mode this module was
+            // built to end, so it is checked rather than assumed.
+            let back = std::fs::read_to_string(&target.token_file)
+                .map_err(|e| format!("wrote {} but cannot read it back: {e}", target.token_file.display()))?;
+            if access_tokens_value(&back)
+                .map(|v| !v.contains("github.com="))
+                .unwrap_or(true)
+            {
+                return Err(format!(
+                    "wrote {} but it carries no github.com entry",
+                    target.token_file.display()
+                ));
+            }
+            Injection::Wrote
+        }
+    };
+
+    Ok(EnsureReport {
+        injection,
+        target: target.clone(),
+        source: token.source.clone(),
+        redacted: token.redacted(),
+        cleared,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +1070,145 @@ mod tests {
     #[test]
     fn an_empty_token_cannot_be_constructed() {
         assert!(ResolvedToken::new("  ", TokenSource::Env("X".into())).is_none());
+    }
+
+    // ── injection: the PURE core, tested without a filesystem ────────
+
+    fn tok(v: &str) -> ResolvedToken {
+        ResolvedToken::new(v, TokenSource::Env("TEST".into())).unwrap()
+    }
+
+    fn user_target() -> CredentialTarget {
+        CredentialTarget::user(Path::new("/home/u"))
+    }
+
+    #[test]
+    fn a_co_located_pair_gets_the_relative_include_form() {
+        assert_eq!(user_target().include_line(), "!include access-tokens.conf");
+    }
+
+    #[test]
+    fn a_split_pair_gets_an_absolute_include() {
+        let t = CredentialTarget {
+            token_file: PathBuf::from("/var/lib/pleme/access-tokens.conf"),
+            nix_conf: PathBuf::from("/home/u/.config/nix/nix.conf"),
+        };
+        assert_eq!(
+            t.include_line(),
+            "!include /var/lib/pleme/access-tokens.conf"
+        );
+    }
+
+    #[test]
+    fn a_fresh_machine_gets_both_files_written() {
+        let plan = plan_injection(None, None, &tok("ghp_new"), &user_target()).unwrap();
+        assert_eq!(plan.token_file, "access-tokens = github.com=ghp_new\n");
+        assert_eq!(
+            plan.nix_conf.as_deref(),
+            Some("!include access-tokens.conf\n")
+        );
+    }
+
+    /// The fast path a shell hook takes on every invocation but the first.
+    #[test]
+    fn an_already_current_pair_plans_nothing() {
+        let plan = plan_injection(
+            Some("access-tokens = github.com=ghp_x\n"),
+            Some("!include access-tokens.conf\n"),
+            &tok("ghp_x"),
+            &user_target(),
+        );
+        assert!(plan.is_none(), "a current pair must not be rewritten");
+    }
+
+    #[test]
+    fn a_rotated_token_rewrites_the_credential_but_not_the_include() {
+        let plan = plan_injection(
+            Some("access-tokens = github.com=ghp_old\n"),
+            Some("!include access-tokens.conf\n"),
+            &tok("ghp_new"),
+            &user_target(),
+        )
+        .unwrap();
+        assert_eq!(plan.token_file, "access-tokens = github.com=ghp_new\n");
+        assert!(plan.nix_conf.is_none(), "include was already present");
+    }
+
+    /// A second forge on the same node must survive. Rewriting the whole line
+    /// from one token would delete it, and that surfaces much later as an
+    /// unrelated fetch failing.
+    #[test]
+    fn a_co_resident_host_is_preserved_not_clobbered() {
+        let plan = plan_injection(
+            Some("access-tokens = gitlab.com=glpat_keep github.com=ghp_old\n"),
+            Some("!include access-tokens.conf\n"),
+            &tok("ghp_new"),
+            &user_target(),
+        )
+        .unwrap();
+        assert!(plan.token_file.contains("gitlab.com=glpat_keep"));
+        assert!(plan.token_file.contains("github.com=ghp_new"));
+        assert!(!plan.token_file.contains("ghp_old"));
+    }
+
+    #[test]
+    fn an_existing_nix_conf_is_appended_to_never_replaced() {
+        let plan = plan_injection(
+            None,
+            Some("experimental-features = nix-command flakes\n"),
+            &tok("ghp_x"),
+            &user_target(),
+        )
+        .unwrap();
+        let conf = plan.nix_conf.unwrap();
+        assert!(conf.contains("experimental-features = nix-command flakes"));
+        assert!(conf.contains("!include access-tokens.conf"));
+    }
+
+    /// A nix.conf missing its trailing newline must not glue the include onto
+    /// the previous setting.
+    #[test]
+    fn a_nix_conf_without_a_trailing_newline_still_gets_a_clean_line() {
+        let plan = plan_injection(
+            None,
+            Some("cores = 0"),
+            &tok("ghp_x"),
+            &user_target(),
+        )
+        .unwrap();
+        let conf = plan.nix_conf.unwrap();
+        assert!(conf.contains("cores = 0\n!include"), "got: {conf:?}");
+    }
+
+    #[test]
+    fn a_commented_out_access_tokens_line_is_not_read_as_a_credential() {
+        assert_eq!(access_tokens_value("# access-tokens = github.com=x\n"), None);
+    }
+
+    /// Trap 1 from the section header, exercised against a real filesystem
+    /// because it is the OS behaviour — not our logic — that bites.
+    #[test]
+    fn a_dangling_symlink_is_cleared_while_a_live_one_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("fleet-dangle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let target = dir.join("target");
+        let link = dir.join("link");
+        std::fs::write(&target, "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(!clear_dangling(&link).unwrap(), "a LIVE link must survive");
+        std::fs::remove_file(&target).unwrap();
+        assert!(
+            clear_dangling(&link).unwrap(),
+            "a DEAD link must be removed so the write can land"
+        );
+        assert!(std::fs::symlink_metadata(&link).is_err());
+
+        // And a plain absent path is not an error.
+        assert!(!clear_dangling(&dir.join("never")).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

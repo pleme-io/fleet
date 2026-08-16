@@ -6,6 +6,7 @@ pub mod exec;
 pub mod flow;
 pub mod info;
 pub mod mcp;
+pub mod nix_credential;
 pub mod pangea;
 pub mod ping;
 pub mod pitr_forge;
