@@ -183,6 +183,31 @@ enum Commands {
         #[command(subcommand)]
         action: SecretsAction,
     },
+
+    /// Make nix able to fetch private pleme-io flake inputs.
+    ///
+    /// Resolves a GitHub token (env -> nix.conf -> SOPS) and writes it where
+    /// nix will read it, idempotently. Cheap enough to call from a directory
+    /// hook: a healthy machine costs one stat plus one read and writes
+    /// nothing.
+    ///
+    /// `pleme-io/fleet` is PUBLIC, so this is reachable with no credential:
+    ///   nix run github:pleme-io/fleet -- nix-credential
+    /// which is what lets it run BEFORE a private flake is evaluated.
+    NixCredential {
+        /// Report only; write nothing. Non-zero exit when nothing resolves.
+        #[arg(long)]
+        check: bool,
+
+        /// Print only when something changed (the shell-hook mode).
+        #[arg(long)]
+        quiet: bool,
+
+        /// Target /root/.config/nix instead of your own — sudo drops HOME,
+        /// so root's config is what a sudo'd rebuild actually reads.
+        #[arg(long)]
+        root: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -362,6 +387,10 @@ fn main() -> Result<()> {
             let all = all || targets.is_empty();
             let resolved = targeting::resolve(&reg, &targets, all)?;
             commands::ping::run(&resolved, &config)?;
+        }
+
+        Commands::NixCredential { check, quiet, root } => {
+            commands::nix_credential::run(check, quiet, root)?;
         }
 
         Commands::Secrets { action } => match action {
