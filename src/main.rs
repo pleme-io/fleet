@@ -132,6 +132,14 @@ enum Commands {
 
     /// Rebuild local system (auto-detects Darwin/NixOS from hostname)
     Rebuild {
+        /// Node to build as. Defaults to `hostname -s`.
+        ///
+        /// PASS THIS ON A FIRST BOOTSTRAP. A fresh NixOS install calls itself
+        /// `nixos`, and `.#nixos` is not a configuration — so the derived name
+        /// only works once the machine has already been the node at least
+        /// once. `fleet rebuild rio` adopts this machine AS rio.
+        node: Option<String>,
+
         /// Show nix evaluation trace
         #[arg(long)]
         show_trace: bool,
@@ -330,11 +338,12 @@ fn main() -> Result<()> {
         }
 
         Commands::Rebuild {
+            node,
             show_trace,
             nix_options,
         } => {
             secrets::provision_for_command(&config, "rebuild")?;
-            commands::rebuild::rebuild(show_trace, &nix_options)?;
+            commands::rebuild::rebuild(node.as_deref(), show_trace, &nix_options)?;
         }
 
         Commands::Ssh { node } => {

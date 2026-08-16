@@ -1182,7 +1182,7 @@ fn short_rev(rev: &str) -> String {
     rev.get(..7).unwrap_or(rev).to_owned()
 }
 
-pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
+pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> Result<()> {
     // Held for the whole call (released on any return path, including
     // early `?` exits and panics, via Drop) — see acquire_rebuild_lock's
     // doc comment for the concrete failure this prevents.
@@ -1206,7 +1206,26 @@ pub fn rebuild(show_trace: bool, nix_options: &[String]) -> Result<()> {
     // front is the only point at which this is cheap to see.
     ensure_tree_is_committed(&flake_root)?;
 
-    let hostname = get_hostname()?;
+    // ── THE NODE NAME IS DERIVED, BUT OVERRIDABLE ────────────────────────
+    // `hostname -s` reports what the machine is called NOW, which on a NixOS
+    // installer image is `nixos`. That is right for a re-build and wrong for
+    // the FIRST one, where the whole point is that the machine has not been
+    // the node yet — `.#nixos` is not a configuration, so the derived form
+    // failed at the very end, after the token work had already succeeded.
+    // Derivation stays the default; the argument is the override, and the log
+    // says which was used so a run against the wrong node is visible in the
+    // first lines rather than at the end.
+    let hostname = match node {
+        Some(n) => {
+            log_info(&format!("Node: {n} (from argument)"));
+            n.to_string()
+        }
+        None => {
+            let h = get_hostname()?;
+            log_info(&format!("Node: {h} (from hostname)"));
+            h
+        }
+    };
 
     // PATH-harden (macOS): `darwin-rebuild` lives ONLY in
     // /run/current-system/sw/bin. A calling shell that lacks it on PATH — one
