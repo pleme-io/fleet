@@ -17,3 +17,4 @@ pub mod rollback;
 pub mod ssh;
 pub mod status;
 pub mod utils;
+pub mod warm_inputs;
