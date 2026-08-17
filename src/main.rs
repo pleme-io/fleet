@@ -5,6 +5,7 @@ use std::path::PathBuf;
 mod commands;
 mod config;
 mod dag;
+mod fetch_recovery;
 mod flow;
 mod github_token;
 mod hooks;
@@ -208,6 +209,22 @@ enum Commands {
         #[arg(long)]
         root: bool,
     },
+
+    /// Ensure every flake input is present locally, sourcing from a fleet
+    /// builder when the upstream throttles THIS host's egress.
+    ///
+    /// GitHub throttles archive generation per egress IP, separately from the
+    /// documented API quota and regardless of a valid token — measured on cid
+    /// 2026-08-17 at 4653/5000 requests remaining. nix's own retry (observed
+    /// backing off 143923 ms) cannot help, because waiting is not the problem.
+    /// A builder on a different egress can fetch the identical content, and
+    /// flake.lock's narHash is what makes "identical" checkable rather than
+    /// assumed.
+    WarmInputs {
+        /// Print what would be run without fetching or copying.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -285,6 +302,10 @@ fn main() -> Result<()> {
             }
         }
 
+        Commands::WarmInputs { dry_run } => {
+            let root = commands::rebuild::find_flake_root(&std::env::current_dir()?)?;
+            commands::warm_inputs::warm_inputs(&root, dry_run)?;
+        }
         Commands::Convergence { json } => {
             commands::convergence::convergence(json)?;
         }
