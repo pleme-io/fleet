@@ -89,7 +89,8 @@ fn parse_e2e_report(stdout: &str) -> Option<(String, Vec<E2eRow>)> {
 /// second invocation blocks until the first finishes instead of racing
 /// its activation state.
 fn acquire_rebuild_lock() -> Result<File> {
-    acquire_lock_at(Path::new(REBUILD_LOCK_PATH))
+    // The ONE environment read on this path, at the real entry point.
+    acquire_lock_at(Path::new(REBUILD_LOCK_PATH), LockWait::from_env())
 }
 
 /// The one machine-wide rebuild lock path.
@@ -133,6 +134,62 @@ const REBUILD_LOCK_PATH: &str = "/tmp/fleet-rebuild.lock";
 /// Override with `FLEET_REBUILD_LOCK_TIMEOUT_SECS`; `0` restores the old
 /// unbounded wait for anyone who genuinely wants it.
 const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// How long to wait for a contended lock — a VALUE, passed in.
+///
+/// ── ★ WHY THIS IS A PARAMETER AND NOT AN ENV READ ────────────────────────
+/// `wait_for_lock` used to read `FLEET_REBUILD_LOCK_TIMEOUT_SECS` itself.
+/// `std::env` is process-global and `cargo test` runs tests as THREADS in one
+/// process, so two tests that set the var raced each other: one set `"1"`, the
+/// other's `remove_var` landed between that write and the read, the read fell
+/// through to the 2-hour default, and the test blocked for the full
+/// `LOCK_WAIT_TIMEOUT` before failing its own 30s assertion.
+///
+/// Observed 2026-08-16, not theorised: a suite run under load reported
+/// `FAILED. 101 passed; 1 failed; finished in 7200.39s` — 7200s being exactly
+/// `2 * 60 * 60`. The same race has a worse arm: read `"0"` and the wait
+/// becomes UNBOUNDED, which is a hang rather than a slow failure.
+///
+/// Serialising those tests behind a mutex would have hidden it. Threading the
+/// value removes the shared mutable cell instead, so the race has nothing to
+/// happen to: ONE place reads the environment ([`LockWait::from_env`], called
+/// once per real invocation), and every test passes the value it means.
+///
+/// The magic zero is a named variant too — `Unbounded` is a state you now have
+/// to ask for by name rather than encode as a `Duration` that happens to be 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockWait {
+    /// Give up after this long and fail typed, naming the holder.
+    Bounded(Duration),
+    /// Wait forever — the pre-2026-08-07 behaviour, kept reachable rather
+    /// than deleted (★★ MODULARIZE, DON'T DELETE) for an operator who knows
+    /// their peer is healthy and does not want to fight the bound.
+    Unbounded,
+}
+
+impl LockWait {
+    /// The fleet default, overridden by `FLEET_REBUILD_LOCK_TIMEOUT_SECS`.
+    /// The ONLY environment read on this path.
+    fn from_env() -> Self {
+        Self::parse(
+            std::env::var("FLEET_REBUILD_LOCK_TIMEOUT_SECS")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    /// `from_env`'s pure core — split out so the parsing rules are tested
+    /// without mutating a process-global, which is the very defect above.
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.and_then(|v| v.trim().parse::<u64>().ok()) {
+            Some(0) => Self::Unbounded,
+            Some(secs) => Self::Bounded(Duration::from_secs(secs)),
+            // Absent OR unparseable: a typo must not silently become
+            // "wait forever". Fall back to the bounded default.
+            None => Self::Bounded(LOCK_WAIT_TIMEOUT),
+        }
+    }
+}
 
 /// How often a blocked rebuild re-reports who it is waiting on.
 const LOCK_WAIT_REPORT_EVERY: Duration = Duration::from_secs(60);
@@ -230,19 +287,31 @@ fn clear_stale_lock(lock_path: &Path) -> Result<()> {
 /// being invisible and stops being unbounded for everyone behind it.
 /// Bounding the holder is `despacho`'s job (`theory/DESPACHO.md`), where
 /// the ask carries a mandatory deadline of its own.
-fn wait_for_lock(file: &File, lock_path: &Path) -> Result<()> {
-    let timeout = std::env::var("FLEET_REBUILD_LOCK_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map_or(LOCK_WAIT_TIMEOUT, Duration::from_secs);
-
-    // An explicit 0 means "wait forever" — the pre-2026-08-07 behaviour,
-    // kept reachable rather than deleted (★★ MODULARIZE, DON'T DELETE) so
-    // an operator who knows their peer is healthy is not forced to fight
-    // the bound.
-    if timeout.is_zero() {
-        return FileExt::lock_exclusive(file).context("failed to acquire rebuild lock");
-    }
+/// `wait` is a VALUE, passed in. It used to be read from the environment right
+/// here, and that is what made the tests race: `std::env` is process-global
+/// while `cargo test` runs tests as THREADS in one process, so two tests
+/// setting the var interleaved — one wrote `"1"`, the other's `remove_var`
+/// landed between that write and this read, the read fell through to the
+/// two-hour default, and the suite blocked for the full `LOCK_WAIT_TIMEOUT`
+/// before failing its own 30s assertion. Observed 2026-08-16:
+/// `FAILED. 101 passed; 1 failed; finished in 7200.39s` — 7200 being exactly
+/// `2 * 60 * 60`. The worse arm reads `"0"` and waits UNBOUNDED: a hang, not a
+/// slow failure.
+///
+/// Serialising those tests behind a mutex would have hidden the race.
+/// Threading the value removes the shared mutable cell, so there is nothing
+/// left for a race to happen to.
+fn wait_for_lock(file: &File, lock_path: &Path, wait: LockWait) -> Result<()> {
+    // `Unbounded` is a NAMED state, not a `Duration` that happens to be zero —
+    // the pre-2026-08-07 behaviour, kept reachable rather than deleted
+    // (★★ MODULARIZE, DON'T DELETE) so an operator who knows their peer is
+    // healthy is not forced to fight the bound.
+    let timeout = match wait {
+        LockWait::Unbounded => {
+            return FileExt::lock_exclusive(file).context("failed to acquire rebuild lock");
+        }
+        LockWait::Bounded(d) => d,
+    };
 
     let started = Instant::now();
     let mut last_report = Instant::now();
@@ -283,7 +352,10 @@ fn wait_for_lock(file: &File, lock_path: &Path) -> Result<()> {
 /// `acquire_rebuild_lock`'s path-parameterized core — split out so tests
 /// can exercise real flock contention against a throwaway path instead of
 /// the machine-wide [`REBUILD_LOCK_PATH`] every real invocation uses.
-fn acquire_lock_at(lock_path: &Path) -> Result<File> {
+/// `wait` threaded in rather than read here, for the same reason
+/// [`wait_for_lock`] takes it: tests must be able to choose a bound WITHOUT
+/// writing a process-global that their siblings are reading concurrently.
+fn acquire_lock_at(lock_path: &Path, wait: LockWait) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -363,7 +435,8 @@ fn acquire_lock_at(lock_path: &Path) -> Result<File> {
             "Another rebuild is already in progress ({}) — waiting for it to finish...",
             describe_holder(lock_path)
         ));
-        wait_for_lock(&file, lock_path)?;
+        // The ONE environment read on this path, at the real entry point.
+        wait_for_lock(&file, lock_path, wait)?;
     }
     // Stamp our identity for the next waiter to read. Truncate first: the
     // previous holder's line is stale the moment we own the lock.
@@ -1699,7 +1772,8 @@ mod rebuild_lock_tests {
         super::clear_stale_lock(&lock).expect("clear");
         assert!(!lock.exists(), "the stale lock is gone");
         // And the normal path then works.
-        let f = super::acquire_lock_at(&lock).expect("acquire after clear");
+        let f = super::acquire_lock_at(&lock, LockWait::Bounded(LOCK_WAIT_TIMEOUT))
+            .expect("acquire after clear");
         drop(f);
         let _ = std::fs::remove_file(&lock);
     }
@@ -1743,7 +1817,7 @@ mod rebuild_lock_tests {
         // not lock the other out. Root creating a 0644 file would make every
         // subsequent operator rebuild fail with EACCES rather than wait.
         let path = fresh_lock_path("perms");
-        let _guard = acquire_lock_at(&path).expect("acquire");
+        let _guard = acquire_lock_at(&path, LockWait::Bounded(LOCK_WAIT_TIMEOUT)).expect("acquire");
         let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         assert_eq!(
             mode, 0o666,
@@ -1758,7 +1832,8 @@ mod rebuild_lock_tests {
         // interactive rebuild indistinguishable from a wedged one.
         let path = fresh_lock_path("holder");
         {
-            let _guard = acquire_lock_at(&path).expect("acquire");
+            let _guard =
+                acquire_lock_at(&path, LockWait::Bounded(LOCK_WAIT_TIMEOUT)).expect("acquire");
             let stamped = fs::read_to_string(&path).expect("read holder");
             assert!(
                 stamped.contains(&std::process::id().to_string()),
@@ -1774,13 +1849,15 @@ mod rebuild_lock_tests {
         // `fleet rebuild` invocations overlapping. This proves the second
         // one now WAITS instead of proceeding concurrently.
         let path = fresh_lock_path("blocks");
-        let first = acquire_lock_at(&path).expect("first acquire");
+        let first =
+            acquire_lock_at(&path, LockWait::Bounded(LOCK_WAIT_TIMEOUT)).expect("first acquire");
 
         let (tx, rx) = mpsc::channel();
         let path_clone = path.clone();
         let handle = thread::spawn(move || {
             tx.send(()).unwrap(); // signal "about to block on acquire"
-            acquire_lock_at(&path_clone).expect("second acquire");
+            acquire_lock_at(&path_clone, LockWait::Bounded(LOCK_WAIT_TIMEOUT))
+                .expect("second acquire");
             "acquired".to_string()
         });
 
@@ -1855,17 +1932,15 @@ mod rebuild_lock_tests {
         let path = fresh_lock_path("bounded");
         // Held for the whole test, never dropped before the assertion —
         // this stands in for a wedged peer.
-        let _held = acquire_lock_at(&path).expect("first acquire");
+        let _held =
+            acquire_lock_at(&path, LockWait::Bounded(LOCK_WAIT_TIMEOUT)).expect("first acquire");
 
-        // SAFETY: single-threaded section of this test; the guard below
-        // restores the prior value before any other lock test runs.
-        unsafe { std::env::set_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS", "1") };
-
+        // The value, passed in. No env write, so no sibling test can observe
+        // or clobber it — this is the whole point of the LockWait parameter.
         let started = Instant::now();
-        let err = acquire_lock_at(&path).expect_err("must not hang, must fail typed");
+        let err = acquire_lock_at(&path, LockWait::Bounded(Duration::from_secs(1)))
+            .expect_err("must not hang, must fail typed");
         let elapsed = started.elapsed();
-
-        unsafe { std::env::remove_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS") };
 
         let msg = format!("{err:#}");
         assert!(
@@ -1891,9 +1966,7 @@ mod rebuild_lock_tests {
     #[test]
     fn timeout_zero_selects_the_unbounded_path() {
         let path = fresh_lock_path("unbounded-opt-in");
-        unsafe { std::env::set_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS", "0") };
-        let got = acquire_lock_at(&path);
-        unsafe { std::env::remove_var("FLEET_REBUILD_LOCK_TIMEOUT_SECS") };
+        let got = acquire_lock_at(&path, LockWait::Unbounded);
         assert!(
             got.is_ok(),
             "uncontended acquire must succeed with the bound disabled"
@@ -1907,9 +1980,11 @@ mod rebuild_lock_tests {
         // releases, so back-to-back rebuilds (the common case) never
         // deadlock against their own prior run.
         let path = fresh_lock_path("sequential");
-        let first = acquire_lock_at(&path).expect("first acquire");
+        let first =
+            acquire_lock_at(&path, LockWait::Bounded(LOCK_WAIT_TIMEOUT)).expect("first acquire");
         drop(first);
-        let second = acquire_lock_at(&path).expect("second acquire after drop");
+        let second = acquire_lock_at(&path, LockWait::Bounded(LOCK_WAIT_TIMEOUT))
+            .expect("second acquire after drop");
         drop(second);
 
         let _ = fs::remove_file(&path);
