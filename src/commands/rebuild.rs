@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use crate::github_token::{self, ResolvedToken, SystemEnv};
+use crate::github_token::{self, ResolvedToken, SystemEnv, TokenConfigFile};
 use fs4::fs_std::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
@@ -1352,6 +1352,28 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
     // fetch, and refusing to rebuild would be worse than letting nix say so.
     let github_token = resolve_github_token(&flake_root);
 
+    // Materialize the credential as a private 0600 nix.conf fragment, ONCE, so
+    // both rebuild arms share it and its `Drop` removes it however this
+    // function exits. Binding it here (rather than inside an arm) is what
+    // keeps the file alive for the whole switch — a temporary dropped at the
+    // end of its statement would leave `!include` pointing at nothing, and
+    // nix skips an unreadable include SILENTLY.
+    //
+    // Non-fatal: a node that cannot write its own temp dir should still get
+    // the rebuild attempt and nix's own error, not a refusal from us.
+    let token_conf = github_token
+        .as_ref()
+        .and_then(|t| match TokenConfigFile::create(t) {
+            Ok(conf) => Some(conf),
+            Err(e) => {
+                log_warning(&format!(
+                    "Could not stage the GitHub credential for nix ({e}) — \
+                 private flake inputs may fail to fetch"
+                ));
+                None
+            }
+        });
+
     // Ensure Claude Code is available for interactive debugging.
     // On first run this installs it via nix profile so the user can
     // use `claude` to troubleshoot any remaining bootstrap issues.
@@ -1378,31 +1400,37 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
             &hostname,
             show_trace,
             nix_options,
-            github_token.as_ref(),
+            token_conf.as_ref(),
         ),
         "linux" => nixos_rebuild(
             &flake_root,
             &hostname,
             show_trace,
             nix_options,
-            github_token.as_ref(),
+            token_conf.as_ref(),
         ),
         os => anyhow::bail!("Unsupported OS: {}", os),
     }
 }
 
-/// Append `--option access-tokens github.com=<tok>` to a rebuild invocation.
+/// Point a rebuild invocation at the resolved credential.
 ///
 /// Threaded through EVERY invocation, not just the first-run bootstrap. The
 /// old code forwarded it only inside the darwin bootstrap branch, so a
 /// steady-state `darwin-rebuild switch` and every single `nixos-rebuild` ran
 /// with whatever nix.conf happened to hold — which is precisely the file that
 /// is stale or empty on the node that needs help.
-fn forward_access_tokens(cmd: &mut Command, token: Option<&ResolvedToken>) {
-    if let Some(token) = token {
-        cmd.arg("--option")
-            .arg("access-tokens")
-            .arg(token.nix_option_value());
+///
+/// ★ The credential travels as `NIX_CONFIG=!include <0600 file>`, NEVER as
+/// `--option access-tokens github.com=<tok>` on argv. argv is world-readable
+/// (`ps`, `/proc/<pid>/cmdline`) for the whole multi-minute life of a switch,
+/// and the fleet PAT was measurably legible there on 2026-08-29. Same parser,
+/// same override precedence, same resulting setting — the secret simply stops
+/// being public. See [`TokenConfigFile`] for the two traps this shape encodes.
+fn forward_access_tokens(cmd: &mut Command, token_conf: Option<&TokenConfigFile>) {
+    if let Some(conf) = token_conf {
+        let existing = std::env::var("NIX_CONFIG").ok();
+        cmd.env("NIX_CONFIG", conf.compose_nix_config(existing.as_deref()));
     }
 }
 
@@ -1411,7 +1439,7 @@ fn darwin_rebuild(
     hostname: &str,
     show_trace: bool,
     nix_options: &[String],
-    github_token: Option<&ResolvedToken>,
+    token_conf: Option<&TokenConfigFile>,
 ) -> Result<()> {
     log_info(&format!("Darwin rebuild for {}...", hostname));
 
@@ -1447,7 +1475,7 @@ fn darwin_rebuild(
         build_cmd.arg("--option").arg("sandbox").arg("false");
 
         // Forward access-tokens so nix can fetch private flake inputs
-        forward_access_tokens(&mut build_cmd, github_token);
+        forward_access_tokens(&mut build_cmd, token_conf);
 
         // Forward user-provided nix options to the bootstrap build
         for pair in nix_options.chunks(2) {
@@ -1466,7 +1494,7 @@ fn darwin_rebuild(
         let activate = format!("{system_path}/activate");
 
         let mut cmd = Command::new("sudo");
-        cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO")
+        cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO,NIX_CONFIG")
             .env("HOME", &real_home)
             .env("USER", &real_user)
             .env("NIX_SSL_CERT_FILE", &ssl_cert)
@@ -1608,7 +1636,7 @@ fn darwin_rebuild(
     prepare_etc_for_darwin()?;
 
     let mut cmd = Command::new("sudo");
-    cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO")
+    cmd.arg("--preserve-env=HOME,USER,NIX_SSL_CERT_FILE,GIT_SSL_CAINFO,NIX_CONFIG")
         .env("HOME", &real_home)
         .env("USER", &real_user)
         .env("NIX_SSL_CERT_FILE", &ssl_cert)
@@ -1625,7 +1653,7 @@ fn darwin_rebuild(
 
     // Forward the resolved credential to the ACTIVATION build too — sudo drops
     // the caller's nix.conf, so root's copy is what would otherwise apply.
-    forward_access_tokens(&mut cmd, github_token);
+    forward_access_tokens(&mut cmd, token_conf);
 
     // Forward --option key value pairs to darwin-rebuild. Last, so an explicit
     // operator `--option access-tokens …` still wins over the resolved one.
@@ -1646,7 +1674,7 @@ fn nixos_rebuild(
     hostname: &str,
     show_trace: bool,
     nix_options: &[String],
-    github_token: Option<&ResolvedToken>,
+    token_conf: Option<&TokenConfigFile>,
 ) -> Result<()> {
     log_info(&format!("NixOS rebuild for {}...", hostname));
 
@@ -1666,7 +1694,7 @@ fn nixos_rebuild(
     // as root and reads ROOT's config, so a token the operator holds in their
     // own nix.conf never reaches this build. Passing it explicitly is what
     // makes a node with no rendered secret rebuild at all.
-    forward_access_tokens(&mut cmd, github_token);
+    forward_access_tokens(&mut cmd, token_conf);
 
     // Forward --option key value pairs to nixos-rebuild. Last, so an explicit
     // operator `--option access-tokens …` still wins over the resolved one.
