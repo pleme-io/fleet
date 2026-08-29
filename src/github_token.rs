@@ -86,7 +86,10 @@
 //! fix. Probing with a read (rather than `exists()`) keeps the two apart, and
 //! [`resolve`] simply moves on rather than treating unreadable as fatal.
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::process::Command;
 
 /// Where a token came from. Carried alongside the token so a later auth
@@ -432,7 +435,10 @@ pub fn resolve<E: TokenEnv>(
             usable_key = Some(k.clone());
             break;
         } else if env.exists(k) {
-            lines.push(format!("  exists but NOT READABLE  age key {}", k.display()));
+            lines.push(format!(
+                "  exists but NOT READABLE  age key {}",
+                k.display()
+            ));
         } else {
             lines.push(format!("  absent    age key {}", k.display()));
         }
@@ -669,7 +675,9 @@ fn upsert_github_entry(existing: Option<&str>, token: &ResolvedToken) -> String 
         .map(access_tokens_entries)
         .unwrap_or_default();
     let value = token.nix_option_value();
-    let (host, tok) = value.split_once('=').expect("nix_option_value is host=token");
+    let (host, tok) = value
+        .split_once('=')
+        .expect("nix_option_value is host=token");
     match entries.iter_mut().find(|(h, _)| h == host) {
         Some(slot) => slot.1 = tok.to_string(),
         None => entries.push((host.to_string(), tok.to_string())),
@@ -691,8 +699,7 @@ pub fn plan_injection(
     let token_file_current = current_token_file.is_some_and(|c| c == desired_token_file);
 
     let want = target.include_line();
-    let nix_conf_current = current_nix_conf
-        .is_some_and(|c| c.lines().any(|l| l.trim() == want));
+    let nix_conf_current = current_nix_conf.is_some_and(|c| c.lines().any(|l| l.trim() == want));
 
     if token_file_current && nix_conf_current {
         return None;
@@ -811,8 +818,12 @@ pub fn ensure<E: TokenEnv>(
             // Verify by reading back. A write that reports success and leaves
             // nothing readable is precisely the failure mode this module was
             // built to end, so it is checked rather than assumed.
-            let back = std::fs::read_to_string(&target.token_file)
-                .map_err(|e| format!("wrote {} but cannot read it back: {e}", target.token_file.display()))?;
+            let back = std::fs::read_to_string(&target.token_file).map_err(|e| {
+                format!(
+                    "wrote {} but cannot read it back: {e}",
+                    target.token_file.display()
+                )
+            })?;
             if access_tokens_value(&back)
                 .map(|v| !v.contains("github.com="))
                 .unwrap_or(true)
@@ -835,10 +846,216 @@ pub fn ensure<E: TokenEnv>(
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// TRANSPORT — handing the credential to a child `nix` WITHOUT argv.
+//
+// ★ WHY THIS EXISTS. Every resolution path above ended at one sink:
+// `--option access-tokens github.com=<tok>` appended to a rebuild's argv.
+// argv is world-readable — `ps` on macOS and `/proc/<pid>/cmdline` on Linux
+// hand the fleet PAT to any local process for the whole multi-minute life of
+// a `darwin-rebuild switch`. Measured 2026-08-29 on cid: the token was
+// legible in `ps aux` output during a routine rebuild. That is the
+// zero-plaintext discipline (never argv, env or logs) violated by the one
+// command every operator runs the most.
+//
+// The fix is a TRANSPORT swap, not a policy change. nix parses `NIX_CONFIG`
+// with the same parser as nix.conf, `!include` directives and all, so a 0600
+// file plus `NIX_CONFIG=!include <path>` reaches exactly the same setting
+// with exactly the same override precedence as `--option` did. Verified
+// 2026-08-29 against the live binary: `NIX_CONFIG="!include f" nix config
+// show` prints the file's `access-tokens` and REPLACES the ambient value —
+// identical semantics, so this is a byte-for-byte behavioural no-op at the
+// setting level while the secret stops travelling in argv. What crosses the
+// process boundary is a PATH; the env carries no credential either.
+//
+// ★ TWO TRAPS, both inherited from the injection block above and re-encoded
+// here because this file is created fresh rather than found.
+//
+// 1. AN UNREADABLE `!include` TARGET IS SILENTLY SKIPPED — no error, no
+//    warning, exit 0, empty `access-tokens`. A rebuild elevates through
+//    `sudo`, so the reader is root while the writer is the operator: root
+//    reads a 0600 user file fine, but the DIRECTORY must be traversable too,
+//    which is why the mode is set at creation rather than left to umask.
+//    A silent skip here is indistinguishable from having no token, which is
+//    the 404-that-says-nothing-about-auth failure this module was built for.
+//    RED-RUN 2026-08-29 against the live nix, so this is measured rather than
+//    argued: `NIX_CONFIG="!include /path/that/does/not/exist" nix config show`
+//    exits 0, prints no diagnostic, and quietly falls back to the ambient
+//    `access-tokens`. On a workstation that fallback happens to be the right
+//    credential; on the bootstrap node this module exists for, it is nothing.
+//    Hence [`TokenConfigFile`] is bound for the whole rebuild rather than
+//    built as a temporary — a value dropped at the end of its own statement
+//    would leave the child pointing at a deleted file and failing THIS way.
+//
+// 2. THE FILE MUST NOT OUTLIVE THE REBUILD. It is a plaintext credential on
+//    disk; `Drop` removes the whole directory so a panic or an early return
+//    cannot leave one behind. It is deliberately NOT written into
+//    `~/.config/nix` — that is sops-nix's territory after activation, and the
+//    injection block above already refuses to clobber it.
+// ─────────────────────────────────────────────────────────────────────
+
+/// A short-lived 0600 file carrying `access-tokens = …`, plus the
+/// `NIX_CONFIG` value that points a child `nix` at it.
+///
+/// Holds no accessor returning the token: the only way out is
+/// [`Self::nix_config_value`], which yields a path. Passing the secret
+/// somewhere unintended does not compile, the same guarantee
+/// [`ResolvedToken`] makes.
+pub struct TokenConfigFile {
+    dir: PathBuf,
+    path: PathBuf,
+}
+
+impl TokenConfigFile {
+    /// Materialize the token as a private nix.conf fragment.
+    ///
+    /// ★ The directory name must be unique per INSTANCE, not per process.
+    /// Keying it on `process::id()` alone was wrong and the tests below caught
+    /// it: two `TokenConfigFile`s alive in one process land on the same path,
+    /// and the first one's `Drop` deletes the second one's file — after which
+    /// `!include` points at nothing and nix skips it SILENTLY (trap 1). A pid
+    /// is also reusable after a crash, so the collision is reachable across
+    /// runs too, not only within one. The counter makes each instance its own
+    /// directory; `create_new` then refuses rather than adopting a path that
+    /// somehow already exists, so a stale corpse is never written into.
+    pub fn create(token: &ResolvedToken) -> std::io::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+
+        let dir = std::env::temp_dir().join(format!("fleet-access-tokens-{}-{seq}", process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&dir)?;
+
+        let path = dir.join("access-tokens.conf");
+        fs::write(&path, token.access_tokens_conf())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+
+        Ok(Self { dir, path })
+    }
+
+    /// The `NIX_CONFIG` value a child process needs. Carries a path, never a
+    /// credential — safe to log, and safe in an environment block.
+    pub fn nix_config_value(&self) -> String {
+        format!("!include {}", self.path.display())
+    }
+
+    /// Compose onto whatever `NIX_CONFIG` the caller's environment already
+    /// holds, so this adds a setting rather than silently discarding an
+    /// operator's own config. nix's parser takes one directive per line.
+    pub fn compose_nix_config(&self, existing: Option<&str>) -> String {
+        match existing.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(prev) => format!("{prev}\n{}", self.nix_config_value()),
+            None => self.nix_config_value(),
+        }
+    }
+}
+
+impl Drop for TokenConfigFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    // ── TRANSPORT ────────────────────────────────────────────────────
+    // The credential must reach nix WITHOUT ever entering argv.
+
+    fn probe_token() -> ResolvedToken {
+        ResolvedToken::new("ghp_probe_token_value", TokenSource::Env("PROBE".into()))
+            .expect("non-empty")
+    }
+
+    #[test]
+    fn token_config_file_holds_the_access_tokens_line() {
+        let conf = TokenConfigFile::create(&probe_token()).expect("write");
+        let body = fs::read_to_string(&conf.path).expect("read back");
+        assert_eq!(body, "access-tokens = github.com=ghp_probe_token_value\n");
+    }
+
+    #[test]
+    fn token_config_file_is_owner_only() {
+        let conf = TokenConfigFile::create(&probe_token()).expect("write");
+        // A credential readable by other local users defeats the whole point
+        // of moving it off argv.
+        let mode = fs::metadata(&conf.path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "token file must be 0600, got {mode:o}");
+        let dmode = fs::metadata(&conf.dir).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(dmode, 0o700, "token dir must be 0700, got {dmode:o}");
+    }
+
+    #[test]
+    fn nix_config_value_carries_a_path_never_the_token() {
+        let token = probe_token();
+        let conf = TokenConfigFile::create(&token).expect("write");
+        let value = conf.nix_config_value();
+        assert!(value.starts_with("!include "), "got {value}");
+        // The whole invariant in one assertion: what crosses the process
+        // boundary must not contain the secret.
+        assert!(
+            !value.contains(token.expose()),
+            "NIX_CONFIG value leaked the token"
+        );
+    }
+
+    #[test]
+    fn compose_nix_config_preserves_an_operator_value() {
+        let conf = TokenConfigFile::create(&probe_token()).expect("write");
+        let composed = conf.compose_nix_config(Some("warn-dirty = false"));
+        assert_eq!(
+            composed,
+            format!("warn-dirty = false\n{}", conf.nix_config_value()),
+            "an operator's own NIX_CONFIG must survive, one directive per line"
+        );
+        // Empty and absent both mean "nothing to preserve" — neither may emit
+        // a leading blank line, which nix parses as a directive.
+        assert_eq!(conf.compose_nix_config(None), conf.nix_config_value());
+        assert_eq!(
+            conf.compose_nix_config(Some("   ")),
+            conf.nix_config_value()
+        );
+    }
+
+    #[test]
+    fn dropping_the_config_file_removes_the_credential_from_disk() {
+        let path = {
+            let conf = TokenConfigFile::create(&probe_token()).expect("write");
+            conf.path.clone()
+        };
+        assert!(
+            !path.exists(),
+            "a plaintext credential survived the rebuild that needed it"
+        );
+    }
+
+    #[test]
+    fn two_live_config_files_do_not_share_a_path() {
+        // Regression: keyed on pid alone, these collided — and the FIRST
+        // one's Drop deleted the SECOND one's file, leaving `!include`
+        // pointing at nothing, which nix skips without a word.
+        let a = TokenConfigFile::create(&probe_token()).expect("write a");
+        let b = TokenConfigFile::create(&probe_token()).expect("write b");
+        assert_ne!(a.path, b.path, "two instances shared one path");
+        assert!(
+            a.path.exists() && b.path.exists(),
+            "one clobbered the other"
+        );
+
+        drop(a);
+        assert!(
+            b.path.exists(),
+            "dropping one config file destroyed another's credential"
+        );
+    }
 
     #[derive(Default)]
     struct MockEnv {
@@ -866,7 +1083,9 @@ mod tests {
                 || self.sops.keys().any(|(f, _)| f == path)
         }
         fn sops_extract(&self, file: &Path, key: &str, _age: &Path) -> Option<String> {
-            self.sops.get(&(file.to_path_buf(), key.to_string())).cloned()
+            self.sops
+                .get(&(file.to_path_buf(), key.to_string()))
+                .cloned()
         }
     }
 
@@ -932,7 +1151,10 @@ mod tests {
         env.files
             .insert(home().join(".config/sops/age/keys.txt"), "AGE-KEY".into());
         env.sops.insert(
-            (root().join("secrets.yaml"), r#"["github"]["classic"]"#.into()),
+            (
+                root().join("secrets.yaml"),
+                r#"["github"]["classic"]"#.into(),
+            ),
             "ghp_from_sops".into(),
         );
 
@@ -980,7 +1202,10 @@ mod tests {
             "ghp_personal".into(),
         );
         env.sops.insert(
-            (root().join("secrets.yaml"), r#"["github"]["classic"]"#.into()),
+            (
+                root().join("secrets.yaml"),
+                r#"["github"]["classic"]"#.into(),
+            ),
             "ghp_shared".into(),
         );
         let (tok, _) = resolve(&env, &home(), &root(), Some("op"));
@@ -993,7 +1218,10 @@ mod tests {
         env.files
             .insert(home().join(".config/sops/age/keys.txt"), "AGE".into());
         env.sops.insert(
-            (root().join("secrets.yaml"), r#"["github"]["classic"]"#.into()),
+            (
+                root().join("secrets.yaml"),
+                r#"["github"]["classic"]"#.into(),
+            ),
             "ghp_shared".into(),
         );
         let (tok, _) = resolve(&env, &home(), &root(), Some("op"));
@@ -1032,7 +1260,10 @@ mod tests {
         env.files
             .insert(home().join(".config/sops/age/keys.txt"), "AGE".into());
         env.sops.insert(
-            (root().join("secrets.yaml"), r#"["github"]["classic"]"#.into()),
+            (
+                root().join("secrets.yaml"),
+                r#"["github"]["classic"]"#.into(),
+            ),
             "   \n".into(),
         );
         let (tok, _) = resolve(&env, &home(), &root(), None);
@@ -1169,20 +1400,17 @@ mod tests {
     /// the previous setting.
     #[test]
     fn a_nix_conf_without_a_trailing_newline_still_gets_a_clean_line() {
-        let plan = plan_injection(
-            None,
-            Some("cores = 0"),
-            &tok("ghp_x"),
-            &user_target(),
-        )
-        .unwrap();
+        let plan = plan_injection(None, Some("cores = 0"), &tok("ghp_x"), &user_target()).unwrap();
         let conf = plan.nix_conf.unwrap();
         assert!(conf.contains("cores = 0\n!include"), "got: {conf:?}");
     }
 
     #[test]
     fn a_commented_out_access_tokens_line_is_not_read_as_a_credential() {
-        assert_eq!(access_tokens_value("# access-tokens = github.com=x\n"), None);
+        assert_eq!(
+            access_tokens_value("# access-tokens = github.com=x\n"),
+            None
+        );
     }
 
     /// Trap 1 from the section header, exercised against a real filesystem
