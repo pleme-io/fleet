@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "2fa8b912f0bccbcb47d536a1f21d8685ed4d76ee51191714cd129bbef05294a4",
+  "cargo_lock_sha256": "a6dc8b673c5dd3edbc5db3f4e7cc804a5b99de1040f18f80de4053b066441f8d",
   "manifest_sha256": {
-    "Cargo.toml": "822536c0cdbe8a130c19fa78c21685fb8f4171551ad51445b0571428cfb0cdc3"
+    "Cargo.toml": "906d28957a78f0c8484109519f508d846f9854094056c9cdc2ac9c64a8ff9d0b"
   },
   "target_resolves": {
     "base": {
@@ -140,7 +140,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -360,7 +360,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [
               "full"
@@ -794,7 +794,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [
               "full"
@@ -954,7 +954,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "indexmap-2.14.0": {
+      "indexmap-2.14.1": {
         "runtime_dependencies": [
           {
             "name": "equivalent",
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.23": {
+      "pleme-fleet-0.1.24": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1221,11 +1221,11 @@
           "proc-macro"
         ]
       },
-      "ref-cast-1.0.26": {
+      "ref-cast-1.0.27": {
         "runtime_dependencies": [
           {
             "name": "ref_cast_impl",
-            "package_key": "ref-cast-impl-1.0.26",
+            "package_key": "ref-cast-impl-1.0.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1237,7 +1237,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "ref-cast-impl-1.0.26": {
+      "ref-cast-impl-1.0.27": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1261,7 +1261,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1593,7 +1593,7 @@
           },
           {
             "name": "ref_cast",
-            "package_key": "ref-cast-1.0.26",
+            "package_key": "ref-cast-1.0.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1727,7 +1727,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1812,7 +1812,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1897,7 +1897,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1968,7 +1968,7 @@
         "runtime_dependencies": [
           {
             "name": "indexmap",
-            "package_key": "indexmap-2.14.0",
+            "package_key": "indexmap-2.14.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2079,7 +2079,7 @@
           "visit-mut"
         ]
       },
-      "syn-3.0.3": {
+      "syn-3.0.4": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -2167,7 +2167,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2250,7 +2250,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.3",
+            "package_key": "syn-3.0.4",
             "kind": "normal",
             "features": [
               "full"
@@ -3298,7 +3298,7 @@
     "ident_case-1.0.1": {
       "edition": "2015"
     },
-    "indexmap-2.14.0": {
+    "indexmap-2.14.1": {
       "edition": "2024"
     },
     "is_terminal_polyfill-1.70.2": {
@@ -3334,7 +3334,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.23": {
+    "pleme-fleet-0.1.24": {
       "edition": "2021",
       "binaries": [
         {
@@ -3351,11 +3351,11 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "ref-cast-1.0.26": {
+    "ref-cast-1.0.27": {
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "ref-cast-impl-1.0.26": {
+    "ref-cast-impl-1.0.27": {
       "edition": "2021",
       "proc_macro": true
     },
@@ -3431,7 +3431,7 @@
     "syn-2.0.119": {
       "edition": "2021"
     },
-    "syn-3.0.3": {
+    "syn-3.0.4": {
       "edition": "2021"
     },
     "thiserror-2.0.20": {
