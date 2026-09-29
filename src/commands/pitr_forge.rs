@@ -28,7 +28,7 @@ pub fn run(
         PitrForgeCommand::Combine => "combine",
     };
 
-    log_info(&format!("pitr-forge {cmd_str}"));
+    log_info(Level::Verbose, &format!("pitr-forge {cmd_str}"));
 
     let mut cmd = Command::new("pitr-forge");
     cmd.arg(cmd_str);
@@ -89,10 +89,10 @@ fn capture_drill_outputs(json_path: &str) -> Result<HashMap<String, serde_json::
     let data = match std::fs::read_to_string(json_path) {
         Ok(d) => d,
         Err(e) => {
-            log_warning(&format!(
-                "Cannot read pitr-forge output '{}': {}",
-                json_path, e
-            ));
+            log_warning(
+                Level::Required,
+                &format!("Cannot read pitr-forge output '{}': {}", json_path, e),
+            );
             return Ok(HashMap::new());
         }
     };
@@ -100,10 +100,10 @@ fn capture_drill_outputs(json_path: &str) -> Result<HashMap<String, serde_json::
     let json: serde_json::Value = match serde_json::from_str(&data) {
         Ok(v) => v,
         Err(e) => {
-            log_warning(&format!(
-                "Cannot parse pitr-forge output '{}': {}",
-                json_path, e
-            ));
+            log_warning(
+                Level::Required,
+                &format!("Cannot parse pitr-forge output '{}': {}", json_path, e),
+            );
             return Ok(HashMap::new());
         }
     };
@@ -141,7 +141,10 @@ fn capture_drill_outputs(json_path: &str) -> Result<HashMap<String, serde_json::
     }
 
     if !outputs.is_empty() {
-        log_info(&format!("Captured {} pitr-forge output(s)", outputs.len()));
+        log_info(
+            Level::Verbose,
+            &format!("Captured {} pitr-forge output(s)", outputs.len()),
+        );
     }
 
     Ok(outputs)

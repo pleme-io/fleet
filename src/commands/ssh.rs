@@ -11,7 +11,10 @@ pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
     }
 
     let (name, node) = &targets.nodes[0];
-    log_info(&format!("Connecting to {} ({})", name, node.hostname));
+    log_info(
+        Level::Verbose,
+        &format!("Connecting to {} ({})", name, node.hostname),
+    );
 
     let ssh = config.resolve_ssh(name);
     let err = ssh_cmd_with_config(&node.ssh_user, &node.hostname, &ssh).exec();

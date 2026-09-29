@@ -28,12 +28,15 @@ fn deploy_single(
     skip_checks: bool,
 ) -> Result<()> {
     if dry_run {
-        log_info(&format!("Dry-run deploy to {} (deploy-rs)", name));
+        log_info(
+            Level::Verbose,
+            &format!("Dry-run deploy to {} (deploy-rs)", name),
+        );
     } else {
-        log_info(&format!(
-            "Deploying to {} (deploy-rs, magic rollback)",
-            name
-        ));
+        log_info(
+            Level::Verbose,
+            &format!("Deploying to {} (deploy-rs, magic rollback)", name),
+        );
     }
 
     let mut cmd = Command::new("deploy");
@@ -51,9 +54,9 @@ fn deploy_single(
     run_command(&mut cmd)?;
 
     if dry_run {
-        log_success(&format!("{} dry-run complete", name));
+        log_success(Level::Required, &format!("{} dry-run complete", name));
     } else {
-        log_success(&format!("{} deployed successfully", name));
+        log_success(Level::Required, &format!("{} deployed successfully", name));
     }
     Ok(())
 }
@@ -68,7 +71,10 @@ fn deploy_fleet(
     let on = names.join(",");
 
     if dry_run {
-        log_info(&format!("Dry-run fleet build: {} (colmena)", on));
+        log_info(
+            Level::Verbose,
+            &format!("Dry-run fleet build: {} (colmena)", on),
+        );
         let mut cmd = Command::new("colmena");
         cmd.arg("build");
         cmd.arg("--on").arg(&on);
@@ -77,9 +83,12 @@ fn deploy_fleet(
         }
         cmd.current_dir(flake);
         run_command(&mut cmd)?;
-        log_success("Fleet dry-run build complete");
+        log_success(Level::Required, "Fleet dry-run build complete");
     } else {
-        log_info(&format!("Fleet deploy: {} (colmena apply)", on));
+        log_info(
+            Level::Verbose,
+            &format!("Fleet deploy: {} (colmena apply)", on),
+        );
         let mut cmd = Command::new("colmena");
         cmd.arg("apply");
         cmd.arg("--on").arg(&on);
@@ -88,7 +97,7 @@ fn deploy_fleet(
         }
         cmd.current_dir(flake);
         run_command(&mut cmd)?;
-        log_success("Fleet deploy complete");
+        log_success(Level::Required, "Fleet deploy complete");
     }
 
     Ok(())

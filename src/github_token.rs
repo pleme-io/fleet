@@ -163,6 +163,12 @@ impl ResolvedToken {
     /// that puts the token in the exact shape its sink expects. With no bare
     /// accessor, there is no way to reach a `String` of the secret and pass it
     /// somewhere unintended — a `log_info("{token}")` does not compile.
+    /// A token for tests elsewhere in the crate, sourced from `GITHUB_TOKEN`.
+    #[cfg(test)]
+    pub fn for_test(token: &str) -> Self {
+        Self::new(token, TokenSource::Env("GITHUB_TOKEN".to_owned())).expect("non-empty")
+    }
+
     #[cfg(test)]
     pub fn expose(&self) -> &str {
         &self.token

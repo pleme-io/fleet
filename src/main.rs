@@ -9,6 +9,7 @@ mod fetch_recovery;
 mod flow;
 mod github_token;
 mod hooks;
+mod output;
 mod registry;
 mod secrets;
 mod targeting;
@@ -18,6 +19,13 @@ mod targeting;
 #[command(about = "Node lifecycle CLI for NixOS fleet management", long_about = None)]
 #[command(version)]
 struct Cli {
+    /// Print progress narration and detected defaults too, and a backtrace on
+    /// failure. Default prints only what needs you: errors and their cause,
+    /// actionable warnings, prompts, and the result. Also: FLEET_OUTPUT=verbose,
+    /// or `output.level: verbose` in fleet.yaml.
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -278,10 +286,50 @@ fn load_config() -> config::FleetConfig {
     config::FleetConfig::load(&dir).unwrap_or_default()
 }
 
-fn main() -> Result<()> {
+/// Settle the output threshold before anything prints, and report any value
+/// that was present but not a level.
+fn settle_output(cli: &Cli, config: &config::FleetConfig) -> output::Level {
+    let env = std::env::var("FLEET_OUTPUT").ok();
+    let resolved = output::resolve(
+        cli.verbose,
+        env.as_deref(),
+        config.output.level_text().as_deref(),
+    );
+    output::set_threshold(resolved.level);
+    for (source, value) in &resolved.rejected {
+        output::log_warning(
+            output::Level::Required,
+            &format!("{source}={value:?} is not an output level (required | verbose) — ignored"),
+        );
+    }
+    if resolved.level == output::Level::Verbose {
+        // Ask anyhow to capture, so a verbose failure can show where it came
+        // from. Set before any error exists; nothing else has started yet.
+        std::env::set_var("RUST_LIB_BACKTRACE", "1");
+    }
+    resolved.level
+}
+
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let config = load_config();
+    let level = settle_output(&cli, &config);
+    // Read before `run`, which never sets it: an operator's own
+    // RUST_LIB_BACKTRACE, or the one `settle_output` set for --verbose.
+    let lib_bt = std::env::var("RUST_LIB_BACKTRACE").ok();
+    match run(cli, config) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                output::render_error(&e, output::wants_backtrace(level, lib_bt.as_deref()))
+            );
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
 
+fn run(cli: Cli, config: config::FleetConfig) -> Result<()> {
     match cli.command {
         Commands::Deploy {
             targets,

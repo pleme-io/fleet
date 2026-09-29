@@ -7,12 +7,15 @@ use crate::targeting::ResolvedTargets;
 pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
     let names: Vec<&str> = targets.names();
     if !confirm(&format!("Rollback {}? (y/N)", names.join(", ")))? {
-        log_info("Aborted");
+        log_info(Level::Required, "Aborted");
         return Ok(());
     }
 
     for (name, node) in &targets.nodes {
-        log_info(&format!("{} Rolling back...", node_label(name)));
+        log_info(
+            Level::Verbose,
+            &format!("{} Rolling back...", node_label(name)),
+        );
         let ssh = config.resolve_ssh(name);
         match ssh_run_with_config(
             &node.ssh_user,
@@ -20,7 +23,10 @@ pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
             &ssh,
             "nixos-rebuild switch --rollback",
         ) {
-            Ok(_) => log_success(&format!("{} Rolled back", node_label(name))),
+            Ok(_) => log_success(
+                Level::Required,
+                &format!("{} Rolled back", node_label(name)),
+            ),
             Err(e) => log_error(&format!("{} Rollback failed: {}", node_label(name), e)),
         }
     }

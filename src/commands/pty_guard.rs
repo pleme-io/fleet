@@ -34,7 +34,7 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
-use super::utils::{log_info, log_warning};
+use super::utils::{log_info, log_warning, Level};
 
 /// Fraction of the pty ceiling past which we reap before running the gate.
 ///
@@ -193,7 +193,10 @@ fn reap(shells: &[OrphanShell]) -> usize {
 pub fn preflight() {
     let Ok(before) = measure() else {
         // Unmeasurable is not the same as fine, and is not worth a rebuild.
-        log_warning("pty pre-flight: could not count ptys — running the gate unguarded");
+        log_warning(
+            Level::Required,
+            "pty pre-flight: could not count ptys — running the gate unguarded",
+        );
         return;
     };
 
@@ -201,25 +204,30 @@ pub fn preflight() {
         return;
     }
 
-    log_warning(&format!(
-        "pty pressure {}/{} ({}%) — reaping orphaned login shells before the e2e gate",
-        before.in_use,
-        before.ceiling,
-        before.pct()
-    ));
+    log_warning(
+        Level::Required,
+        &format!(
+            "pty pressure {}/{} ({}%) — reaping orphaned login shells before the e2e gate",
+            before.in_use,
+            before.ceiling,
+            before.pct()
+        ),
+    );
 
     let orphans = match find_orphan_login_shells() {
         Ok(o) => o,
         Err(e) => {
-            log_warning(&format!(
-                "pty pre-flight: could not enumerate processes ({e:#})"
-            ));
+            log_warning(
+                Level::Required,
+                &format!("pty pre-flight: could not enumerate processes ({e:#})"),
+            );
             return;
         }
     };
 
     if orphans.is_empty() {
         log_warning(
+            Level::Required,
             "pty pre-flight: no ORPHANED login shells to reap — the ptys belong to live \
              sessions. If the gate now fails to spawn a shell, that is this host being out \
              of ptys, NOT the candidate closure.",
@@ -229,18 +237,24 @@ pub fn preflight() {
 
     let killed = reap(&orphans);
     let after = measure().unwrap_or(before);
-    log_info(&format!(
-        "pty pre-flight: reaped {} orphaned login shell(s) — ptys {} -> {} of {}",
-        killed, before.in_use, after.in_use, after.ceiling
-    ));
+    log_info(
+        Level::Verbose,
+        &format!(
+            "pty pre-flight: reaped {} orphaned login shell(s) — ptys {} -> {} of {}",
+            killed, before.in_use, after.in_use, after.ceiling
+        ),
+    );
 
     if after.saturation() >= REAP_THRESHOLD {
-        log_warning(&format!(
-            "pty pressure still {}% after reaping — the leak is LIVE and has a producer \
+        log_warning(
+            Level::Required,
+            &format!(
+                "pty pressure still {}% after reaping — the leak is LIVE and has a producer \
              this guard cannot see. If the e2e gate fails to spawn a shell, read it as pty \
              exhaustion on this host, not as a broken closure.",
-            after.pct()
-        ));
+                after.pct()
+            ),
+        );
     }
 }
 

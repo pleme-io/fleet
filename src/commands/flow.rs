@@ -58,10 +58,10 @@ pub fn run(
         return Ok(());
     }
 
-    log_info(&format!(
-        "Running flow: {} — {}",
-        name, flow_def.description
-    ));
+    log_info(
+        Level::Verbose,
+        &format!("Running flow: {} — {}", name, flow_def.description),
+    );
     println!();
 
     // Pre-resolve flow-level secrets exactly once. Plaintext is held in
@@ -69,10 +69,10 @@ pub fn run(
     let resolved_secrets = if flow_def.secrets.is_empty() {
         HashMap::new()
     } else {
-        log_info(&format!(
-            "Resolving {} secret(s)...",
-            flow_def.secrets.len()
-        ));
+        log_info(
+            Level::Verbose,
+            &format!("Resolving {} secret(s)...", flow_def.secrets.len()),
+        );
         resolve_flow_secrets(&flow_def.secrets, &config.config_dir)?
     };
 
@@ -97,7 +97,10 @@ pub fn run(
                 match status {
                     Ok(s) if s.success() => {}
                     _ => {
-                        log_info(&format!("Condition not met, skipping step '{}'", step.id));
+                        log_info(
+                            Level::Verbose,
+                            &format!("Condition not met, skipping step '{}'", step.id),
+                        );
                         continue;
                     }
                 }
@@ -129,7 +132,7 @@ pub fn run(
         }
     }
 
-    log_success(&format!("Flow '{}' complete", name));
+    log_success(Level::Required, &format!("Flow '{}' complete", name));
     Ok(())
 }
 
@@ -188,7 +191,7 @@ fn dispatch_action(
             Ok(StepResult::default())
         }
         ActionDef::Shell { command, env } => {
-            log_info(&format!("Running: {}", command));
+            log_info(Level::Verbose, &format!("Running: {}", command));
             let resolved_env = resolve_step_env(env, all_outputs, resolved_secrets);
             let mut cmd = Command::new("sh");
             cmd.arg("-c").arg(command);
@@ -200,7 +203,7 @@ fn dispatch_action(
         }
         ActionDef::DarwinRebuild { show_trace } => {
             let flake = flake_dir();
-            log_info("Running darwin-rebuild...");
+            log_info(Level::Verbose, "Running darwin-rebuild...");
             let mut cmd = Command::new("nix");
             cmd.arg("run").arg(format!("{}#darwin-rebuild", flake));
             if *show_trace {
@@ -211,7 +214,7 @@ fn dispatch_action(
         }
         ActionDef::HomeManagerRebuild { show_trace } => {
             let flake = flake_dir();
-            log_info("Running home-manager-rebuild...");
+            log_info(Level::Verbose, "Running home-manager-rebuild...");
             let mut cmd = Command::new("nix");
             cmd.arg("run")
                 .arg(format!("{}#home-manager-rebuild", flake));
@@ -223,7 +226,7 @@ fn dispatch_action(
         }
         ActionDef::FlakeUpdate { inputs } => {
             let flake = flake_dir();
-            log_info("Running flake update...");
+            log_info(Level::Verbose, "Running flake update...");
             let mut cmd = Command::new("nix");
             cmd.arg("flake").arg("update");
             for input in inputs {

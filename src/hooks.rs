@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use crate::commands::utils::{log_info, log_warning};
+use crate::commands::utils::{log_info, log_warning, Level};
 use crate::config::FleetConfig;
 use crate::registry::Node;
 
@@ -14,10 +14,10 @@ pub fn run_pre(
 ) -> Result<()> {
     if let Some(hook) = config.hooks.get(command_name) {
         if let Some(ref script) = hook.pre {
-            log_info(&format!(
-                "Running pre-{} hook for {}",
-                command_name, node_name
-            ));
+            log_info(
+                Level::Verbose,
+                &format!("Running pre-{} hook for {}", command_name, node_name),
+            );
             let status = Command::new("sh")
                 .arg("-c")
                 .arg(script)
@@ -42,10 +42,10 @@ pub fn run_pre(
 pub fn run_post(config: &FleetConfig, command_name: &str, node_name: &str, node: &Node) {
     if let Some(hook) = config.hooks.get(command_name) {
         if let Some(ref script) = hook.post {
-            log_info(&format!(
-                "Running post-{} hook for {}",
-                command_name, node_name
-            ));
+            log_info(
+                Level::Verbose,
+                &format!("Running post-{} hook for {}", command_name, node_name),
+            );
             match Command::new("sh")
                 .arg("-c")
                 .arg(script)
@@ -55,18 +55,21 @@ pub fn run_post(config: &FleetConfig, command_name: &str, node_name: &str, node:
                 .status()
             {
                 Ok(status) if !status.success() => {
-                    log_warning(&format!(
-                        "Post-{} hook failed for {} (exit {})",
-                        command_name,
-                        node_name,
-                        status.code().unwrap_or(-1)
-                    ));
+                    log_warning(
+                        Level::Required,
+                        &format!(
+                            "Post-{} hook failed for {} (exit {})",
+                            command_name,
+                            node_name,
+                            status.code().unwrap_or(-1)
+                        ),
+                    );
                 }
                 Err(e) => {
-                    log_warning(&format!(
-                        "Post-{} hook error for {}: {}",
-                        command_name, node_name, e
-                    ));
+                    log_warning(
+                        Level::Required,
+                        &format!("Post-{} hook error for {}: {}", command_name, node_name, e),
+                    );
                 }
                 _ => {}
             }

@@ -9,7 +9,7 @@ pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
     let flake = flake_dir();
 
     for (name, node) in &targets.nodes {
-        log_info(&format!("Computing diff for {}", name));
+        log_info(Level::Verbose, &format!("Computing diff for {}", name));
 
         // Build the new closure locally
         let drv = format!("{flake}#nixosConfigurations.{name}.config.system.build.toplevel");
@@ -31,11 +31,10 @@ pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
         ) {
             Ok(path) => path,
             Err(e) => {
-                log_warning(&format!(
-                    "{} Failed to read current system: {}",
-                    node_label(name),
-                    e
-                ));
+                log_warning(
+                    Level::Required,
+                    &format!("{} Failed to read current system: {}", node_label(name), e),
+                );
                 continue;
             }
         };
@@ -48,7 +47,10 @@ pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
             .arg(current_path.trim())
             .arg(new_path.trim());
         if let Err(e) = run_command(&mut cmd) {
-            log_warning(&format!("{} diff failed: {}", node_label(name), e));
+            log_warning(
+                Level::Required,
+                &format!("{} diff failed: {}", node_label(name), e),
+            );
         }
         println!();
     }

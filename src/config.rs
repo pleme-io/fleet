@@ -42,11 +42,42 @@ pub struct FleetConfig {
     pub hooks: HashMap<String, HookPair>,
     pub flows: HashMap<String, FlowDef>,
     pub secrets: HashMap<String, SecretDef>,
+    /// How much fleet prints. See `crate::output`.
+    pub output: OutputConfig,
     /// Directory containing fleet.yaml. Populated by `FleetConfig::load`,
     /// used as the base for resolving relative SOPS file paths declared
     /// on flows. Skipped at deserialization.
     #[serde(skip)]
     pub config_dir: std::path::PathBuf,
+}
+
+/// `output:` in fleet.yaml.
+///
+/// ```yaml
+/// output:
+///   level: verbose   # required (default) | verbose
+/// ```
+///
+/// `level` is read as an OPEN value and narrowed to `crate::output::Level`
+/// afterwards: a typo or a non-string here is reported and ignored, rather
+/// than failing the whole document and silently discarding every other key.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OutputConfig {
+    pub level: Option<serde_yaml_ng::Value>,
+}
+
+impl OutputConfig {
+    /// The raw `level` as text, for `crate::output::resolve`.
+    pub fn level_text(&self) -> Option<String> {
+        self.level.as_ref().map(|v| match v {
+            serde_yaml_ng::Value::String(s) => s.clone(),
+            other => serde_yaml_ng::to_string(other)
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
+        })
+    }
 }
 
 /// A secret that can be provisioned from an external provider before commands run.

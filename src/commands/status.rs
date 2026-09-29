@@ -5,7 +5,7 @@ use crate::config::FleetConfig;
 use crate::targeting::ResolvedTargets;
 
 pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
-    log_info("Gathering node status...\n");
+    log_info(Level::Verbose, "Gathering node status...\n");
 
     for (name, node) in &targets.nodes {
         let label = node_label(name);

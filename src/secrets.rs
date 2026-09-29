@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::commands::utils::{log_info, log_success, log_warning};
+use crate::commands::utils::{log_info, log_success, log_warning, Level};
 use crate::config::{FleetConfig, SecretDef};
 
 /// Expand ~ to $HOME in a path string (public for use in list display).
@@ -38,7 +38,10 @@ fn provision_secret(name: &str, secret: &SecretDef, op_cmd: Option<&str>) -> Res
             let op =
                 op_cmd.context("1Password CLI (op) is required but could not be found or built")?;
 
-            log_info(&format!("Provisioning secret '{}' from 1Password...", name));
+            log_info(
+                Level::Verbose,
+                &format!("Provisioning secret '{}' from 1Password...", name),
+            );
 
             let output = Command::new(op)
                 .arg("read")
@@ -70,11 +73,10 @@ fn provision_secret(name: &str, secret: &SecretDef, op_cmd: Option<&str>) -> Res
             fs::set_permissions(&target, fs::Permissions::from_mode(mode))
                 .with_context(|| format!("Failed to set permissions on {}", target.display()))?;
 
-            log_success(&format!(
-                "Secret '{}' provisioned -> {}",
-                name,
-                target.display()
-            ));
+            log_success(
+                Level::Required,
+                &format!("Secret '{}' provisioned -> {}", name, target.display()),
+            );
         }
         other => {
             bail!(
@@ -112,12 +114,15 @@ pub fn provision_for_command(config: &FleetConfig, command_name: &str) -> Result
                 op_resolved = true;
 
                 if op_cmd.is_none() {
-                    log_warning("1Password CLI unavailable and could not be built — secrets will be skipped");
+                    log_warning(Level::Required, "1Password CLI unavailable and could not be built — secrets will be skipped");
                 }
             }
 
             if secret.provider == "onepassword" && op_cmd.is_none() {
-                log_warning(&format!("Secret '{}' needs 1Password CLI — skipping", name));
+                log_warning(
+                    Level::Required,
+                    &format!("Secret '{}' needs 1Password CLI — skipping", name),
+                );
                 continue;
             }
 
@@ -135,13 +140,15 @@ pub fn clean_secret(config: &FleetConfig, name: &str) -> Result<()> {
             if target.exists() {
                 fs::remove_file(&target)
                     .with_context(|| format!("Failed to remove {}", target.display()))?;
-                log_success(&format!("Secret '{}' removed: {}", name, target.display()));
+                log_success(
+                    Level::Required,
+                    &format!("Secret '{}' removed: {}", name, target.display()),
+                );
             } else {
-                log_info(&format!(
-                    "Secret '{}' not present at {}",
-                    name,
-                    target.display()
-                ));
+                log_info(
+                    Level::Required,
+                    &format!("Secret '{}' not present at {}", name, target.display()),
+                );
             }
             Ok(())
         }
@@ -192,7 +199,10 @@ fn resolve_op_cmd() -> Option<String> {
         return Some("op".to_string());
     }
 
-    log_warning("1Password CLI (op) not in PATH — installing via nix...");
+    log_warning(
+        Level::Verbose,
+        "1Password CLI (op) not in PATH — installing via nix...",
+    );
 
     let output = Command::new("nix")
         .args([
@@ -216,7 +226,7 @@ fn resolve_op_cmd() -> Option<String> {
     let op_bin = format!("{store_path}/bin/op");
 
     if std::path::Path::new(&op_bin).exists() {
-        log_success("1Password CLI built successfully");
+        log_success(Level::Verbose, "1Password CLI built successfully");
         Some(op_bin)
     } else {
         None

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::utils::{
     log_info, log_success, log_warning, rebuild_timeout, run_command, run_command_output,
-    run_command_timed,
+    run_command_timed, Level,
 };
 
 /// One row of the `mado e2e` smoke matrix.
@@ -337,12 +337,15 @@ fn wait_for_lock(file: &File, lock_path: &Path, wait: LockWait) -> Result<()> {
             );
         }
         if last_report.elapsed() >= LOCK_WAIT_REPORT_EVERY {
-            log_info(&format!(
-                "still waiting for the rebuild lock ({}s elapsed, {}s left) — held by {}",
-                waited.as_secs(),
-                timeout.saturating_sub(waited).as_secs(),
-                describe_holder(lock_path),
-            ));
+            log_info(
+                Level::Required,
+                &format!(
+                    "still waiting for the rebuild lock ({}s elapsed, {}s left) — held by {}",
+                    waited.as_secs(),
+                    timeout.saturating_sub(waited).as_secs(),
+                    describe_holder(lock_path),
+                ),
+            );
             last_report = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -395,11 +398,14 @@ fn acquire_lock_at(lock_path: &Path, wait: LockWait) -> Result<File> {
                     h = describe_holder(lock_path)
                 )),
                 _ => {
-                    log_info(&format!(
-                        "Stale rebuild lock at {} ({}) — its writer is gone; clearing it.",
-                        lock_path.display(),
-                        describe_holder(lock_path)
-                    ));
+                    log_info(
+                        Level::Verbose,
+                        &format!(
+                            "Stale rebuild lock at {} ({}) — its writer is gone; clearing it.",
+                            lock_path.display(),
+                            describe_holder(lock_path)
+                        ),
+                    );
                     clear_stale_lock(lock_path)?;
                     OpenOptions::new()
                         .create(true)
@@ -431,10 +437,13 @@ fn acquire_lock_at(lock_path: &Path, wait: LockWait) -> Result<File> {
         // Name the holder. A bare "waiting..." with no identity and no timeout
         // is the thing that makes a blocked interactive rebuild feel hung —
         // the operator cannot tell a live peer from a wedged one.
-        log_info(&format!(
-            "Another rebuild is already in progress ({}) — waiting for it to finish...",
-            describe_holder(lock_path)
-        ));
+        log_info(
+            Level::Required,
+            &format!(
+                "Another rebuild is already in progress ({}) — waiting for it to finish...",
+                describe_holder(lock_path)
+            ),
+        );
         // The ONE environment read on this path, at the real entry point.
         wait_for_lock(&file, lock_path, wait)?;
     }
@@ -464,6 +473,23 @@ pub fn find_flake_root(start: &Path) -> Result<PathBuf> {
             );
         }
     }
+}
+
+/// The node this rebuild builds as: the argument when given, else the
+/// hostname. Which one was used is narration (Verbose) — a wrong node still
+/// fails loudly, naming `.#<node>`, at the build.
+fn resolve_node(node: Option<&str>, hostname: impl FnOnce() -> Result<String>) -> Result<String> {
+    Ok(match node {
+        Some(n) => {
+            log_info(Level::Verbose, &format!("Node: {n} (from argument)"));
+            n.to_string()
+        }
+        None => {
+            let h = hostname()?;
+            log_info(Level::Verbose, &format!("Node: {h} (from hostname)"));
+            h
+        }
+    })
 }
 
 fn get_hostname() -> Result<String> {
@@ -519,7 +545,10 @@ fn resolve_sops_cmd() -> String {
     if command_exists("sops") {
         return "sops".to_string();
     }
-    log_info("sops not in PATH — building from nixpkgs...");
+    log_info(
+        Level::Verbose,
+        "sops not in PATH — building from nixpkgs...",
+    );
     match run_command_output(Command::new("nix").args([
         "--extra-experimental-features",
         "nix-command flakes",
@@ -532,7 +561,10 @@ fn resolve_sops_cmd() -> String {
         // Non-fatal: resolution simply finds no SOPS source and falls back to
         // whatever the env / nix.conf already carry.
         Err(e) => {
-            log_warning(&format!("Could not build sops from nixpkgs: {e}"));
+            log_warning(
+                Level::Required,
+                &format!("Could not build sops from nixpkgs: {e}"),
+            );
             "sops".to_string()
         }
     }
@@ -569,27 +601,40 @@ fn resolve_github_token(flake_root: &Path) -> Option<ResolvedToken> {
         // credential answers 404, not 401 — and 404 reads as "that commit is
         // gone", which sends people to check the pin instead of the token.
         log_warning(
+            Level::Required,
             "No GitHub token found — private flake inputs will fail with HTTP 404 \
              (GitHub hides private repos behind 404, so this is NOT a missing rev).",
         );
         for line in &report.lines {
-            log_warning(line);
+            log_warning(Level::Required, line);
         }
-        log_warning("Fix: add your PAT with `nix run .#sops-edit-mine` (github/pat), or");
-        log_warning("restore the age key whose PUBLIC half is a recipient of that file.");
+        log_warning(
+            Level::Required,
+            "Fix: add your PAT with `nix run .#sops-edit-mine` (github/pat), or",
+        );
+        log_warning(
+            Level::Required,
+            "restore the age key whose PUBLIC half is a recipient of that file.",
+        );
         return None;
     };
 
     // Only say "scraped" when it actually was one. Announcing a decrypt on
     // every rebuild would train the operator to ignore the line that matters.
     if token.source.is_sops() {
-        log_success(&format!(
-            "No usable token on disk — scraped {} from {}",
-            token.redacted(),
-            token.source.describe()
-        ));
+        log_success(
+            Level::Verbose,
+            &format!(
+                "No usable token on disk — scraped {} from {}",
+                token.redacted(),
+                token.source.describe()
+            ),
+        );
     } else {
-        log_info(&format!("GitHub token: {}", token.source.describe()));
+        log_info(
+            Level::Verbose,
+            &format!("GitHub token: {}", token.source.describe()),
+        );
     }
 
     seed_bootstrap_auth_files(&home, &token);
@@ -607,7 +652,10 @@ fn resolve_github_token(flake_root: &Path) -> Option<ResolvedToken> {
 fn seed_bootstrap_auth_files(home: &Path, token: &ResolvedToken) {
     let dir = home.join(".config/nix");
     if let Err(e) = fs::create_dir_all(&dir) {
-        log_warning(&format!("Could not create {}: {e}", dir.display()));
+        log_warning(
+            Level::Required,
+            &format!("Could not create {}: {e}", dir.display()),
+        );
         return;
     }
 
@@ -625,8 +673,14 @@ fn seed_bootstrap_auth_files(home: &Path, token: &ResolvedToken) {
         let wrote = fs::write(&path, content)
             .and_then(|()| fs::set_permissions(&path, fs::Permissions::from_mode(0o600)));
         match wrote {
-            Ok(()) => log_success(&format!("Bootstrapped ~/.config/nix/{label}")),
-            Err(e) => log_warning(&format!("Could not write {}: {e}", path.display())),
+            Ok(()) => log_success(
+                Level::Verbose,
+                &format!("Bootstrapped ~/.config/nix/{label}"),
+            ),
+            Err(e) => log_warning(
+                Level::Required,
+                &format!("Could not write {}: {e}", path.display()),
+            ),
         }
     }
 }
@@ -638,7 +692,10 @@ fn ensure_claude_code() {
         return;
     }
 
-    log_info("Claude Code not found — installing via nix profile...");
+    log_info(
+        Level::Verbose,
+        "Claude Code not found — installing via nix profile...",
+    );
 
     let status = Command::new("nix")
         .args([
@@ -654,8 +711,11 @@ fn ensure_claude_code() {
         .status();
 
     match status {
-        Ok(s) if s.success() => log_success("Claude Code installed"),
-        _ => log_warning("Could not install Claude Code — continuing without it"),
+        Ok(s) if s.success() => log_success(Level::Verbose, "Claude Code installed"),
+        _ => log_warning(
+            Level::Required,
+            "Could not install Claude Code — continuing without it",
+        ),
     }
 }
 
@@ -704,7 +764,10 @@ fn bootstrap_nix_custom_conf() -> Result<()> {
         ));
     }
 
-    log_info("Configuring nix daemon for bootstrap (sandbox=false, trusted-users)...");
+    log_info(
+        Level::Required,
+        "Configuring nix daemon for bootstrap (sandbox=false, trusted-users)...",
+    );
 
     // Write via sudo tee since /etc/nix is root-owned
     let new_content = format!("{current}{additions}");
@@ -723,7 +786,7 @@ fn bootstrap_nix_custom_conf() -> Result<()> {
     }
 
     // Restart the nix daemon so it picks up the new settings
-    log_info("Restarting nix daemon to apply settings...");
+    log_info(Level::Verbose, "Restarting nix daemon to apply settings...");
     let _ = Command::new("sudo")
         .args([
             "launchctl",
@@ -739,7 +802,7 @@ fn bootstrap_nix_custom_conf() -> Result<()> {
     // Brief pause for daemon restart
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    log_success("Nix daemon configured for bootstrap");
+    log_success(Level::Verbose, "Nix daemon configured for bootstrap");
     Ok(())
 }
 
@@ -766,7 +829,10 @@ fn accept_xcode_license() {
         _ => {}
     }
 
-    log_info("Accepting Xcode license (required for xcodebuild)...");
+    log_info(
+        Level::Required,
+        "Accepting Xcode license (required for xcodebuild)...",
+    );
     let status = Command::new("sudo")
         .args(["xcodebuild", "-license", "accept"])
         .stdin(std::process::Stdio::inherit())
@@ -775,8 +841,11 @@ fn accept_xcode_license() {
         .status();
 
     match status {
-        Ok(s) if s.success() => log_success("Xcode license accepted"),
-        _ => log_warning("Could not accept Xcode license — xcodebuild may fail"),
+        Ok(s) if s.success() => log_success(Level::Verbose, "Xcode license accepted"),
+        _ => log_warning(
+            Level::Required,
+            "Could not accept Xcode license — xcodebuild may fail",
+        ),
     }
 }
 
@@ -799,9 +868,10 @@ fn prepare_etc_for_darwin() -> Result<()> {
         let backup = PathBuf::from(format!("{path}.before-nix-darwin"));
         // Only move regular files (not symlinks — symlinks mean nix-darwin already manages it)
         if p.exists() && !p.is_symlink() && !backup.exists() {
-            log_info(&format!(
-                "Moving {path} → {path}.before-nix-darwin (nix-darwin will manage it)"
-            ));
+            log_info(
+                Level::Required,
+                &format!("Moving {path} → {path}.before-nix-darwin (nix-darwin will manage it)"),
+            );
             let status = Command::new("sudo")
                 .args(["mv", path, &format!("{path}.before-nix-darwin")])
                 .stdin(std::process::Stdio::inherit())
@@ -865,13 +935,18 @@ fn report_gitops_health() {
     let ev = Evidence::from_status(&v, now_epoch);
     match gitops_verdict(&v, &ev) {
         GitopsVerdict::Converged(p) => {
-            log_info(&format!("gitops: converged (at branch HEAD {})", p.rev()));
+            log_info(
+                Level::Verbose,
+                &format!("gitops: converged (at branch HEAD {})", p.rev()),
+            );
         }
         // Quiet by design: no alarm for a loop we cannot read, but no
         // claim of health either.
-        GitopsVerdict::Unknown { reason } => log_info(&format!("gitops: unknown — {reason}")),
+        GitopsVerdict::Unknown { reason } => {
+            log_info(Level::Verbose, &format!("gitops: unknown — {reason}"))
+        }
         GitopsVerdict::Degraded { headline, detail } => {
-            log_warning(&headline);
+            log_warning(Level::Required, &headline);
             print!("{detail}");
         }
     }
@@ -1193,6 +1268,7 @@ pub fn partition_dirt(porcelain: &str) -> (Vec<String>, Vec<String>) {
 fn ensure_tree_is_committed(flake_root: &Path) -> Result<()> {
     if std::env::var("FLEET_ALLOW_DIRTY_REBUILD").is_ok() {
         log_warning(
+            Level::Required,
             "FLEET_ALLOW_DIRTY_REBUILD set — building from an uncommitted tree. \
              The reconciler will revert this to HEAD on its next tick.",
         );
@@ -1207,11 +1283,17 @@ fn ensure_tree_is_committed(flake_root: &Path) -> Result<()> {
     let Ok(out) = out else {
         // git absent or unrunnable is not evidence of cleanliness, but it
         // is also not this command's job to adjudicate. Say so and continue.
-        log_warning("could not run `git status` — proceeding without the clean-tree check");
+        log_warning(
+            Level::Required,
+            "could not run `git status` — proceeding without the clean-tree check",
+        );
         return Ok(());
     };
     if !out.status.success() {
-        log_warning("`git status` failed — proceeding without the clean-tree check");
+        log_warning(
+            Level::Required,
+            "`git status` failed — proceeding without the clean-tree check",
+        );
         return Ok(());
     }
     let listing = String::from_utf8_lossy(&out.stdout);
@@ -1296,17 +1378,7 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
     // Derivation stays the default; the argument is the override, and the log
     // says which was used so a run against the wrong node is visible in the
     // first lines rather than at the end.
-    let hostname = match node {
-        Some(n) => {
-            log_info(&format!("Node: {n} (from argument)"));
-            n.to_string()
-        }
-        None => {
-            let h = get_hostname()?;
-            log_info(&format!("Node: {h} (from hostname)"));
-            h
-        }
-    };
+    let hostname = resolve_node(node, get_hostname)?;
 
     // PATH-harden (macOS): `darwin-rebuild` lives ONLY in
     // /run/current-system/sw/bin. A calling shell that lacks it on PATH — one
@@ -1325,11 +1397,14 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
         std::env::set_var("PATH", format!("{prefix}:{existing}"));
     }
 
-    log_info(&format!(
-        "Rebuilding {} (flake at {})",
-        hostname,
-        flake_root.display()
-    ));
+    log_info(
+        Level::Verbose,
+        &format!(
+            "Rebuilding {} (flake at {})",
+            hostname,
+            flake_root.display()
+        ),
+    );
 
     report_gitops_health();
 
@@ -1337,9 +1412,10 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
     // before any builds. Only writes if settings are missing (first run).
     if std::env::consts::OS == "macos" {
         if let Err(e) = bootstrap_nix_custom_conf() {
-            log_warning(&format!(
-                "Nix daemon config bootstrap: {e} — continuing anyway"
-            ));
+            log_warning(
+                Level::Required,
+                &format!("Nix daemon config bootstrap: {e} — continuing anyway"),
+            );
         }
         // Accept Xcode license — xcodebuild refuses to run for any user
         // (including nix build users) until the license is accepted.
@@ -1366,10 +1442,13 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
         .and_then(|t| match TokenConfigFile::create(t) {
             Ok(conf) => Some(conf),
             Err(e) => {
-                log_warning(&format!(
-                    "Could not stage the GitHub credential for nix ({e}) — \
+                log_warning(
+                    Level::Required,
+                    &format!(
+                        "Could not stage the GitHub credential for nix ({e}) — \
                  private flake inputs may fail to fetch"
-                ));
+                    ),
+                );
                 None
             }
         });
@@ -1441,7 +1520,10 @@ fn darwin_rebuild(
     nix_options: &[String],
     token_conf: Option<&TokenConfigFile>,
 ) -> Result<()> {
-    log_info(&format!("Darwin rebuild for {}...", hostname));
+    log_info(
+        Level::Verbose,
+        &format!("Darwin rebuild for {}...", hostname),
+    );
 
     // darwin-rebuild switch requires root for system activation.
     // Preserve HOME/USER so home-manager activates for the real user.
@@ -1455,7 +1537,10 @@ fn darwin_rebuild(
     // Bootstrap: on first run, darwin-rebuild isn't installed yet.
     // Build the system configuration and activate it directly.
     if !command_exists("darwin-rebuild") {
-        log_warning("darwin-rebuild not in PATH — bootstrapping from flake...");
+        log_warning(
+            Level::Required,
+            "darwin-rebuild not in PATH — bootstrapping from flake...",
+        );
 
         let mut build_cmd = Command::new("nix");
         build_cmd
@@ -1490,7 +1575,7 @@ fn darwin_rebuild(
         // Move /etc files that nix-darwin wants to manage before activation
         prepare_etc_for_darwin()?;
 
-        log_info("Activating system profile (bootstrap)...");
+        log_info(Level::Required, "Activating system profile (bootstrap)...");
         let activate = format!("{system_path}/activate");
 
         let mut cmd = Command::new("sudo");
@@ -1503,7 +1588,10 @@ fn darwin_rebuild(
             .current_dir(flake_root);
 
         run_command(&mut cmd)?;
-        log_success(&format!("{} bootstrapped successfully", hostname));
+        log_success(
+            Level::Required,
+            &format!("{} bootstrapped successfully", hostname),
+        );
         return Ok(());
     }
 
@@ -1539,7 +1627,10 @@ fn darwin_rebuild(
             // switch". Reap first, and say so out loud if the pressure survives.
             super::pty_guard::preflight();
 
-            log_info("e2e gate — driving the candidate closure's mado/frostmourne matrix");
+            log_info(
+                Level::Verbose,
+                "e2e gate — driving the candidate closure's mado/frostmourne matrix",
+            );
             // CAPTURED, not inherited. The gate is a machine-readable JSON
             // report, and it was being dumped raw into the operator's
             // rebuild — brace-wrapped rows interleaved with rmcp's own
@@ -1563,6 +1654,13 @@ fn darwin_rebuild(
             let stderr = String::from_utf8_lossy(&out.stderr);
             let report = parse_e2e_report(&stdout);
 
+            // The rows are evidence when the gate fails and narration when
+            // it passes.
+            let rows_level = if out.status.success() {
+                Level::Verbose
+            } else {
+                Level::Required
+            };
             if let Some((shell, rows)) = &report {
                 let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
                 for row in rows {
@@ -1573,16 +1671,24 @@ fn darwin_rebuild(
                     } else {
                         ("✗".red().bold(), row.name.red().bold())
                     };
-                    println!(
-                        "       {mark} {name:<width$}  {}",
-                        row.detail.dimmed(),
-                        width = width
+                    crate::output::emit_raw(
+                        rows_level,
+                        crate::output::Stream::Stdout,
+                        &format!(
+                            "       {mark} {name:<width$}  {}",
+                            row.detail.dimmed(),
+                            width = width
+                        ),
                     );
                 }
                 // The shell under test is the whole point of the gate — it
                 // is what proves the closure ships the binary it claims —
                 // so name it, by store path, rather than "verified".
-                println!("       {} {}", "shell".dimmed(), shell.dimmed());
+                crate::output::emit_raw(
+                    rows_level,
+                    crate::output::Stream::Stdout,
+                    &format!("       {} {}", "shell".dimmed(), shell.dimmed()),
+                );
             }
 
             if !out.status.success() {
@@ -1619,17 +1725,26 @@ fn darwin_rebuild(
             });
             let total = report.as_ref().map_or(0, |(_, r)| r.len());
             if total > 0 {
-                log_success(&format!(
+                log_success(Level::Verbose, &format!(
                     "e2e gate passed — {passed}/{total} checks, candidate closure verified interactive"
                 ));
             } else {
-                log_success("e2e gate passed — candidate closure verified interactive");
+                log_success(
+                    Level::Verbose,
+                    "e2e gate passed — candidate closure verified interactive",
+                );
             }
         } else {
-            log_info("e2e gate: no .#e2e-mado app in this flake — skipped");
+            log_info(
+                Level::Verbose,
+                "e2e gate: no .#e2e-mado app in this flake — skipped",
+            );
         }
     } else {
-        log_warning("e2e gate SKIPPED via FLEET_SKIP_E2E_GATE=1");
+        log_warning(
+            Level::Required,
+            "e2e gate SKIPPED via FLEET_SKIP_E2E_GATE=1",
+        );
     }
 
     // Move /etc files that nix-darwin wants to manage before activation
@@ -1665,7 +1780,10 @@ fn darwin_rebuild(
 
     run_command_timed(&mut cmd, rebuild_timeout())?;
     post_rebuild_cleanup();
-    log_success(&format!("{} rebuilt successfully", hostname));
+    log_success(
+        Level::Required,
+        &format!("{} rebuilt successfully", hostname),
+    );
     Ok(())
 }
 
@@ -1676,7 +1794,10 @@ fn nixos_rebuild(
     nix_options: &[String],
     token_conf: Option<&TokenConfigFile>,
 ) -> Result<()> {
-    log_info(&format!("NixOS rebuild for {}...", hostname));
+    log_info(
+        Level::Verbose,
+        &format!("NixOS rebuild for {}...", hostname),
+    );
 
     let mut cmd = Command::new("sudo");
     cmd.arg(rebuild_driver("nixos-rebuild"))
@@ -1706,7 +1827,10 @@ fn nixos_rebuild(
 
     run_command_timed(&mut cmd, rebuild_timeout())?;
     post_rebuild_cleanup();
-    log_success(&format!("{} rebuilt successfully", hostname));
+    log_success(
+        Level::Required,
+        &format!("{} rebuilt successfully", hostname),
+    );
     Ok(())
 }
 
@@ -1727,18 +1851,21 @@ fn post_rebuild_cleanup() {
         return;
     }
 
-    log_info("post-rebuild: seibi nix-gc --keep-days 14");
+    log_info(Level::Verbose, "post-rebuild: seibi nix-gc --keep-days 14");
     let status = Command::new("seibi")
         .args(["nix-gc", "--keep-days", "14"])
         .status();
 
     match status {
-        Ok(s) if s.success() => log_success("post-rebuild nix-gc complete"),
-        Ok(s) => log_warning(&format!(
-            "post-rebuild nix-gc exited non-zero: {:?}",
-            s.code()
-        )),
-        Err(e) => log_warning(&format!("post-rebuild nix-gc failed to spawn: {e}")),
+        Ok(s) if s.success() => log_success(Level::Verbose, "post-rebuild nix-gc complete"),
+        Ok(s) => log_warning(
+            Level::Required,
+            &format!("post-rebuild nix-gc exited non-zero: {:?}", s.code()),
+        ),
+        Err(e) => log_warning(
+            Level::Required,
+            &format!("post-rebuild nix-gc failed to spawn: {e}"),
+        ),
     }
 }
 
@@ -2342,5 +2469,58 @@ mod gitops_verdict_tests {
         assert!(parse_e2e_report("{\"unrelated\": 1}").is_none());
         // Present but empty rows is not a renderable matrix.
         assert!(parse_e2e_report("{\"shell\":\"x\",\"rows\":[]}").is_none());
+    }
+}
+
+/// The output policy, measured on the rebuild's own call sites rather than on
+/// synthetic messages.
+#[cfg(test)]
+mod output_policy_tests {
+    use super::*;
+    use crate::output::{capture, Level};
+
+    fn plain(level: Level, f: impl FnOnce()) -> Vec<String> {
+        capture(level, f)
+            .into_iter()
+            .map(|(_, l)| crate::output::tests::strip_ansi(&l))
+            .collect()
+    }
+
+    fn announce() {
+        resolve_node(None, || Ok("ryn".to_owned())).expect("resolves");
+    }
+
+    #[test]
+    fn the_node_line_is_silent_by_default() {
+        assert!(plain(Level::Required, announce).is_empty());
+    }
+
+    #[test]
+    fn the_node_line_returns_verbatim_under_verbose() {
+        assert_eq!(
+            plain(Level::Verbose, announce),
+            vec!["[INFO] Node: ryn (from hostname)"]
+        );
+    }
+
+    #[test]
+    fn seeding_auth_files_is_narration_but_a_failure_to_is_not() {
+        let home = std::env::temp_dir().join(format!("fleet-output-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).expect("home");
+        let token = ResolvedToken::for_test("ghp_x");
+        let quiet = plain(Level::Required, || seed_bootstrap_auth_files(&home, &token));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).expect("home");
+        let loud = plain(Level::Verbose, || seed_bootstrap_auth_files(&home, &token));
+        let _ = fs::remove_dir_all(&home);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        assert_eq!(
+            loud,
+            vec![
+                "[OK] Bootstrapped ~/.config/nix/access-tokens.conf",
+                "[OK] Bootstrapped ~/.config/nix/netrc",
+            ]
+        );
     }
 }

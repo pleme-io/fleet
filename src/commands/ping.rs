@@ -7,7 +7,7 @@ use crate::config::FleetConfig;
 use crate::targeting::ResolvedTargets;
 
 pub fn run(targets: &ResolvedTargets, config: &FleetConfig) -> Result<()> {
-    log_info("Checking SSH connectivity...\n");
+    log_info(Level::Verbose, "Checking SSH connectivity...\n");
 
     let mut reachable = 0;
     let mut unreachable = 0;

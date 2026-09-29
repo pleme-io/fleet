@@ -9,7 +9,7 @@ NixOS fleet management + infrastructure orchestration via declarative DAG workfl
 
 ```bash
 cargo build
-cargo test   # 12 tests
+cargo test   # 150 tests (2026-09-29)
 ```
 
 ## Architecture
@@ -33,7 +33,8 @@ src/
     rebuild.rs         # darwin-rebuild / nixos-rebuild
     exec.rs            # Remote command execution
     ssh.rs             # Interactive SSH
-    utils.rs           # Logging, SSH helpers, command runners
+    utils.rs           # SSH helpers, command runners (stderr tee + CommandFailed)
+  output.rs            # Output policy: Level (Required|Verbose), log_* helpers, error rendering
   registry.rs          # Node registry (FLEET_NODES JSON)
   targeting.rs         # Node targeting (@tag, names, --all)
   hooks.rs             # Pre/post hooks
@@ -139,6 +140,30 @@ Level 3: [compute]               # depends on network + storage
 ```
 
 Cycle detection via DFS coloring (Gray→Gray edge = cycle).
+
+## Output policy
+
+fleet prints only what the operator must see or act on: errors and their
+cause, warnings that need an action, prompts, and the final one-line result.
+Narration, detected/default restatements and "skipped, not configured" are
+`Level::Verbose`. Every `log_info`/`log_success`/`log_warning` call takes a
+`Level` — a new message cannot compile without being classified. Nothing is
+deleted: `--verbose` prints every pre-policy message verbatim.
+
+| Surface | Spelling |
+|---|---|
+| flag (wins) | `-v` / `--verbose` (global) |
+| env | `FLEET_OUTPUT=required\|verbose` |
+| `fleet.yaml` | `output: { level: verbose }` |
+| default | `required` |
+
+An unknown value is warned about and ignored, never fatal. A failed
+`run_command_timed` (the rebuild switch) tees stderr live — through a pty when
+our stderr is a terminal, so nix's progress bar is unchanged — and ends with
+the command's own `error:` block, then one `[ERROR]` line naming the command
+and exit code. The backtrace prints only under `--verbose` or
+`RUST_LIB_BACKTRACE=1`; ambient `RUST_BACKTRACE=1` (exported by the Rust
+devshells) deliberately does not count.
 
 ## Conventions
 

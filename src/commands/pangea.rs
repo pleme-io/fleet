@@ -23,10 +23,10 @@ pub fn run(
         PangeaOperation::Synth => "synth",
     };
 
-    log_info(&format!(
-        "pangea {} {} --namespace {}",
-        op_str, file, namespace
-    ));
+    log_info(
+        Level::Verbose,
+        &format!("pangea {} {} --namespace {}", op_str, file, namespace),
+    );
 
     let mut cmd = Command::new("pangea");
     cmd.arg(op_str).arg(file).arg("--namespace").arg(namespace);
@@ -71,10 +71,13 @@ fn capture_outputs(
     );
 
     if !Path::new(&workspace_dir).exists() {
-        log_warning(&format!(
-            "Workspace dir not found: {} — skipping output capture",
-            workspace_dir
-        ));
+        log_warning(
+            Level::Required,
+            &format!(
+                "Workspace dir not found: {} — skipping output capture",
+                workspace_dir
+            ),
+        );
         return Ok(HashMap::new());
     }
 
@@ -85,11 +88,14 @@ fn capture_outputs(
         Ok(o) if o.status.success() => o,
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
-            log_warning(&format!("tofu output failed: {}", stderr.trim()));
+            log_warning(
+                Level::Required,
+                &format!("tofu output failed: {}", stderr.trim()),
+            );
             return Ok(HashMap::new());
         }
         Err(e) => {
-            log_warning(&format!("Failed to run tofu: {}", e));
+            log_warning(Level::Required, &format!("Failed to run tofu: {}", e));
             return Ok(HashMap::new());
         }
     };
@@ -112,7 +118,10 @@ fn capture_outputs(
     }
 
     if !outputs.is_empty() {
-        log_info(&format!("Captured {} output(s)", outputs.len()));
+        log_info(
+            Level::Verbose,
+            &format!("Captured {} output(s)", outputs.len()),
+        );
     }
 
     Ok(outputs)

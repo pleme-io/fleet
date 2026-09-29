@@ -30,7 +30,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
-use super::utils::{log_info, log_success, log_warning};
+use super::utils::{log_info, log_success, log_warning, Level};
 use crate::fetch_recovery::{
     classify_fetch_failure, parse_build_machines, parse_prefetch_json, pinned_nar_hash,
     FetchFailure, RecoveryPlan, WarmOutcome,
@@ -52,19 +52,25 @@ pub fn warm_inputs(flake_root: &Path, dry_run: bool) -> Result<()> {
     let builders = parse_build_machines(&machines);
 
     if builders.is_empty() {
-        log_warning(&format!(
-            "no ssh builders in {MACHINES_PATH} — a throttled input cannot be \
+        log_warning(
+            Level::Required,
+            &format!(
+                "no ssh builders in {MACHINES_PATH} — a throttled input cannot be \
              recovered from another egress on this host"
-        ));
+            ),
+        );
     } else {
         let names: Vec<&str> = builders.iter().map(|b| b.host.as_str()).collect();
-        log_info(&format!("fetch sources, best egress first: {}", names.join(", ")));
+        log_info(
+            Level::Verbose,
+            &format!("fetch sources, best egress first: {}", names.join(", ")),
+        );
     }
 
     for round in 1..=MAX_ROUNDS {
         match attempt(flake_root, &lock, &builders, dry_run)? {
             WarmOutcome::AlreadyWarm => {
-                log_success("every flake input is present locally");
+                log_success(Level::Required, "every flake input is present locally");
                 return Ok(());
             }
             WarmOutcome::Recovered {
@@ -72,10 +78,13 @@ pub fn warm_inputs(flake_root: &Path, dry_run: bool) -> Result<()> {
                 builder,
                 store_path,
             } => {
-                log_success(&format!(
+                log_success(
+                    Level::Required,
+                    &format!(
                     "round {round}: {input} recovered from {builder} (hash matches flake.lock) \
                      -> {store_path}"
-                ));
+                ),
+                );
                 // Loop: a second throttled input is common after a lock bump,
                 // and each round warms exactly one.
             }
@@ -157,24 +166,33 @@ fn attempt(
         };
 
         if dry_run {
-            log_info(&format!(
-                "would run on {}: {}",
-                plan.builder,
-                plan.prefetch_argv().join(" ")
-            ));
-            log_info(&format!(
-                "would then: {}",
-                plan.copy_argv("<storePath>").join(" ")
-            ));
+            log_info(
+                Level::Required,
+                &format!(
+                    "would run on {}: {}",
+                    plan.builder,
+                    plan.prefetch_argv().join(" ")
+                ),
+            );
+            log_info(
+                Level::Required,
+                &format!("would then: {}", plan.copy_argv("<storePath>").join(" ")),
+            );
             return Ok(WarmOutcome::AlreadyWarm);
         }
 
-        log_info(&format!("{} throttled locally; asking {}", input, plan.builder));
+        log_info(
+            Level::Verbose,
+            &format!("{} throttled locally; asking {}", input, plan.builder),
+        );
         let Some(result) = prefetch_on(&plan) else {
-            log_warning(&format!(
-                "{} could not fetch {} either — trying the next source",
-                plan.builder, input
-            ));
+            log_warning(
+                Level::Required,
+                &format!(
+                    "{} could not fetch {} either — trying the next source",
+                    plan.builder, input
+                ),
+            );
             continue;
         };
 
@@ -188,10 +206,13 @@ fn attempt(
             .status()
             .context("failed to launch `nix copy`")?;
         if !status.success() {
-            log_warning(&format!(
-                "nix copy from {} failed — trying the next source",
-                plan.builder
-            ));
+            log_warning(
+                Level::Required,
+                &format!(
+                    "nix copy from {} failed — trying the next source",
+                    plan.builder
+                ),
+            );
             continue;
         }
 

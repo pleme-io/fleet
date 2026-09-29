@@ -6,7 +6,7 @@ use crate::targeting::ResolvedTargets;
 
 pub fn run(targets: &ResolvedTargets, cmd: &[String], config: &FleetConfig) -> Result<()> {
     let remote_cmd = cmd.join(" ");
-    log_info(&format!("Executing: {}", remote_cmd));
+    log_info(Level::Verbose, &format!("Executing: {}", remote_cmd));
 
     let mut had_error = false;
 

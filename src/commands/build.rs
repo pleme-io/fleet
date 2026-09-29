@@ -9,7 +9,7 @@ pub fn run(targets: &ResolvedTargets, show_trace: bool) -> Result<()> {
 
     if targets.is_single() {
         let (name, _node) = &targets.nodes[0];
-        log_info(&format!("Building {} (nix build)", name));
+        log_info(Level::Verbose, &format!("Building {} (nix build)", name));
 
         let mut cmd = Command::new("nix");
         cmd.arg("build");
@@ -20,11 +20,14 @@ pub fn run(targets: &ResolvedTargets, show_trace: bool) -> Result<()> {
             cmd.arg("--show-trace");
         }
         run_command(&mut cmd)?;
-        log_success(&format!("{} built successfully", name));
+        log_success(Level::Required, &format!("{} built successfully", name));
     } else {
         let names = targets.names();
         let on = names.join(",");
-        log_info(&format!("Fleet build: {} (colmena build)", on));
+        log_info(
+            Level::Verbose,
+            &format!("Fleet build: {} (colmena build)", on),
+        );
 
         let mut cmd = Command::new("colmena");
         cmd.arg("build");
@@ -34,7 +37,7 @@ pub fn run(targets: &ResolvedTargets, show_trace: bool) -> Result<()> {
         }
         cmd.current_dir(&flake);
         run_command(&mut cmd)?;
-        log_success("Fleet build complete");
+        log_success(Level::Required, "Fleet build complete");
     }
 
     Ok(())
