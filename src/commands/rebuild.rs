@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use super::build_engine::{self, Engine, Override, SystemClass};
 use super::utils::{
     log_info, log_success, log_warning, rebuild_timeout, run_command, run_command_output,
     run_command_timed, Level,
@@ -1473,6 +1474,28 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
     // committed spec on disk run `gen build --if-stale` manually
     // in that repo; the rebuild path is now sweep-free.
 
+    // ── WHICH ENGINE DRIVES THIS REBUILD IS THE NODE'S SELECTION ─────────
+    // `pleme.buildEngine.selected` in the node's own configuration; CppNix
+    // unless the node selects otherwise (see build_engine.rs).
+    let class = match std::env::consts::OS {
+        "macos" => SystemClass::Darwin,
+        _ => SystemClass::Nixos,
+    };
+    if let Engine::Sui {
+        program,
+        argv_prefix,
+    } = resolve_engine(&flake_root, class, &hostname, token_conf.as_ref())?
+    {
+        return sui_rebuild(
+            &flake_root,
+            &hostname,
+            &program,
+            &argv_prefix,
+            nix_options,
+            token_conf.as_ref(),
+        );
+    }
+
     match std::env::consts::OS {
         "macos" => darwin_rebuild(
             &flake_root,
@@ -1511,6 +1534,79 @@ fn forward_access_tokens(cmd: &mut Command, token_conf: Option<&TokenConfigFile>
         let existing = std::env::var("NIX_CONFIG").ok();
         cmd.env("NIX_CONFIG", conf.compose_nix_config(existing.as_deref()));
     }
+}
+
+/// Read the node's `pleme.buildEngine.driver` and pick the engine.
+fn resolve_engine(
+    flake_root: &Path,
+    class: SystemClass,
+    node: &str,
+    token_conf: Option<&TokenConfigFile>,
+) -> Result<Engine> {
+    let over = build_engine::parse_override(std::env::var("FLEET_BUILD_ENGINE").ok().as_deref())?;
+    if over == Override::CppNix {
+        return Ok(Engine::CppNix);
+    }
+    let mut cmd = Command::new(rebuild_driver("nix"));
+    cmd.args(build_engine::probe_args(class, node))
+        .current_dir(flake_root);
+    forward_access_tokens(&mut cmd, token_conf);
+    let outcome = match cmd.output() {
+        Ok(out) => build_engine::classify(
+            out.status.success(),
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        ),
+        Err(e) => build_engine::ProbeOutcome::Failed(e.to_string()),
+    };
+    if let build_engine::ProbeOutcome::Failed(why) = &outcome {
+        let first = why.lines().last().unwrap_or_default();
+        log_warning(
+            Level::Required,
+            &format!(
+                "could not read pleme.buildEngine for {node} ({first}); rebuilding with CppNix"
+            ),
+        );
+    }
+    let engine = build_engine::select(&outcome)?;
+    log_info(
+        Level::Verbose,
+        &format!("build engine for {node}: {engine:?}"),
+    );
+    Ok(engine)
+}
+
+/// Rebuild with sui: `sudo <driver> <argvPrefix…> switch --flake <root>#<node>`.
+fn sui_rebuild(
+    flake_root: &Path,
+    hostname: &str,
+    program: &str,
+    argv_prefix: &[String],
+    nix_options: &[String],
+    token_conf: Option<&TokenConfigFile>,
+) -> Result<()> {
+    // `--nix-option` pairs are CppNix `--option`s; sui takes none of them.
+    if !nix_options.is_empty() {
+        anyhow::bail!(
+            "{hostname} selects sui, and --nix-option is a CppNix flag sui does not take; \
+             rerun without it, or with FLEET_BUILD_ENGINE=cppnix"
+        );
+    }
+    let argv = build_engine::sui_argv(program, argv_prefix, flake_root, hostname);
+    log_info(
+        Level::Required,
+        &format!("{hostname} selects sui: {}", argv.join(" ")),
+    );
+    let mut cmd = Command::new("sudo");
+    cmd.args(&argv).current_dir(flake_root);
+    forward_access_tokens(&mut cmd, token_conf);
+    run_command_timed(&mut cmd, rebuild_timeout())?;
+    post_rebuild_cleanup();
+    log_success(
+        Level::Required,
+        &format!("{hostname} rebuilt successfully (sui)"),
+    );
+    Ok(())
 }
 
 fn darwin_rebuild(

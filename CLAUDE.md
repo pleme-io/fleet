@@ -9,7 +9,7 @@ NixOS fleet management + infrastructure orchestration via declarative DAG workfl
 
 ```bash
 cargo build
-cargo test   # 150 tests (2026-09-29)
+cargo test   # 155 tests (2026-09-29)
 ```
 
 ## Architecture
@@ -31,6 +31,7 @@ src/
     reboot.rs          # Node reboot
     rollback.rs        # NixOS rollback
     rebuild.rs         # darwin-rebuild / nixos-rebuild
+    build_engine.rs    # which engine drives `rebuild`: the node's pleme.buildEngine.driver (CppNix default)
     exec.rs            # Remote command execution
     ssh.rs             # Interactive SSH
     utils.rs           # SSH helpers, command runners (stderr tee + CommandFailed)
