@@ -88,6 +88,7 @@ ssh:
 deploy:
   show_trace: false
   magic_rollback: true
+  bootstrap_claude_code: false
 
 # Per-node overrides
 nodes:

@@ -124,6 +124,7 @@ impl Default for SshConfig {
 pub struct DeployConfig {
     pub show_trace: bool,
     pub magic_rollback: bool,
+    pub bootstrap_claude_code: bool,
 }
 
 impl Default for DeployConfig {
@@ -131,6 +132,7 @@ impl Default for DeployConfig {
         Self {
             show_trace: false,
             magic_rollback: true,
+            bootstrap_claude_code: false,
         }
     }
 }

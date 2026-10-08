@@ -437,7 +437,12 @@ fn run(cli: Cli, config: config::FleetConfig) -> Result<()> {
             nix_options,
         } => {
             secrets::provision_for_command(&config, "rebuild")?;
-            commands::rebuild::rebuild(node.as_deref(), show_trace, &nix_options)?;
+            commands::rebuild::rebuild(
+                node.as_deref(),
+                show_trace,
+                &nix_options,
+                config.deploy.bootstrap_claude_code,
+            )?;
         }
 
         Commands::Ssh { node } => {

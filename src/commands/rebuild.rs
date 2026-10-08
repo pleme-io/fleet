@@ -1346,7 +1346,12 @@ fn short_rev(rev: &str) -> String {
     rev.get(..7).unwrap_or(rev).to_owned()
 }
 
-pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> Result<()> {
+pub fn rebuild(
+    node: Option<&str>,
+    show_trace: bool,
+    nix_options: &[String],
+    bootstrap_claude_code: bool,
+) -> Result<()> {
     // Held for the whole call (released on any return path, including
     // early `?` exits and panics, via Drop) — see acquire_rebuild_lock's
     // doc comment for the concrete failure this prevents.
@@ -1454,10 +1459,9 @@ pub fn rebuild(node: Option<&str>, show_trace: bool, nix_options: &[String]) -> 
             }
         });
 
-    // Ensure Claude Code is available for interactive debugging.
-    // On first run this installs it via nix profile so the user can
-    // use `claude` to troubleshoot any remaining bootstrap issues.
-    ensure_claude_code();
+    if bootstrap_claude_code {
+        ensure_claude_code();
+    }
 
     // Spec staleness is handled per-package by substrate's
     // `lockfile-builder.nix` (see substrate/lib/build/rust/
