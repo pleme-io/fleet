@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "458e9bf6dbe5b7c57e40ec1eeb97e0de3a03eed5c713853cde253585c8cbb468",
+  "cargo_lock_sha256": "bd5120d883f65547a148d0f05374151b0d56fd85b26edaaf00e8e990146537fd",
   "manifest_sha256": {
-    "Cargo.toml": "3f269cce56a3f2b372ca61e40142ede39032f7f5feff5bec1a7dba2bc3cc91e4"
+    "Cargo.toml": "33c813569e265e3287a118d783681996eac86bec6562f0dd560c7af7fbd9ee90"
   },
   "target_resolves": {
     "base": {
@@ -390,7 +390,7 @@
         "runtime_dependencies": [
           {
             "name": "lazy_static",
-            "package_key": "lazy_static-1.5.0",
+            "package_key": "lazy_static-1.5.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -543,7 +543,7 @@
         "runtime_dependencies": [
           {
             "name": "libc",
-            "package_key": "libc-0.2.189",
+            "package_key": "libc-0.2.190",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -553,7 +553,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.189",
+            "package_key": "libc-0.2.190",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -563,7 +563,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.189",
+            "package_key": "libc-0.2.190",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -995,12 +995,12 @@
         "build_dependencies": [],
         "features": []
       },
-      "lazy_static-1.5.0": {
+      "lazy_static-1.5.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
-      "libc-0.2.189": {
+      "libc-0.2.190": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": [
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.26": {
+      "pleme-fleet-0.1.27": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1101,7 +1101,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.189",
+            "package_key": "libc-0.2.190",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1167,7 +1167,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.1",
+            "package_key": "tokio-1.53.2",
             "kind": "normal",
             "features": [
               "io-std",
@@ -1410,7 +1410,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.1",
+            "package_key": "tokio-1.53.2",
             "kind": "normal",
             "features": [
               "macros",
@@ -2180,7 +2180,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tokio-1.53.1": {
+      "tokio-1.53.2": {
         "runtime_dependencies": [
           {
             "name": "bytes",
@@ -2299,7 +2299,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.189",
+            "package_key": "libc-0.2.190",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2319,7 +2319,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.1",
+            "package_key": "tokio-1.53.2",
             "kind": "normal",
             "features": [
               "sync"
@@ -2537,7 +2537,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2547,7 +2547,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2632,7 +2632,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2642,7 +2642,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2757,7 +2757,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2767,7 +2767,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2890,7 +2890,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2900,7 +2900,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2985,7 +2985,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2995,7 +2995,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3110,7 +3110,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3120,7 +3120,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.189",
+                "package_key": "libc-0.2.190",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3308,10 +3308,10 @@
     "itoa-1.0.18": {
       "edition": "2021"
     },
-    "lazy_static-1.5.0": {
+    "lazy_static-1.5.1": {
       "edition": "2015"
     },
-    "libc-0.2.189": {
+    "libc-0.2.190": {
       "edition": "2021",
       "build_script": "build.rs"
     },
@@ -3335,7 +3335,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.26": {
+    "pleme-fleet-0.1.27": {
       "edition": "2021",
       "binaries": [
         {
@@ -3443,7 +3443,7 @@
       "edition": "2021",
       "proc_macro": true
     },
-    "tokio-1.53.1": {
+    "tokio-1.53.2": {
       "edition": "2021"
     },
     "tokio-macros-2.7.2": {
