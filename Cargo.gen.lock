@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "bd5120d883f65547a148d0f05374151b0d56fd85b26edaaf00e8e990146537fd",
+  "cargo_lock_sha256": "d1b82c211dcc0f4a555c366610f61d6c410795b91609bd7a1f827710458aabb5",
   "manifest_sha256": {
-    "Cargo.toml": "33c813569e265e3287a118d783681996eac86bec6562f0dd560c7af7fbd9ee90"
+    "Cargo.toml": "2fc7fe1b5263f0a264b0e59ea6b49af07777183bc10e4c00821940bb7b526ca5"
   },
   "target_resolves": {
     "base": {
@@ -140,7 +140,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -360,7 +360,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [
               "full"
@@ -534,7 +534,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "equivalent-1.0.2": {
+      "equivalent-1.0.3": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -543,7 +543,7 @@
         "runtime_dependencies": [
           {
             "name": "libc",
-            "package_key": "libc-0.2.190",
+            "package_key": "libc-0.2.191",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -553,7 +553,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.190",
+            "package_key": "libc-0.2.191",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -563,7 +563,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.190",
+            "package_key": "libc-0.2.191",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -794,7 +794,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [
               "full"
@@ -958,7 +958,7 @@
         "runtime_dependencies": [
           {
             "name": "equivalent",
-            "package_key": "equivalent-1.0.2",
+            "package_key": "equivalent-1.0.3",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -1000,7 +1000,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "libc-0.2.190": {
+      "libc-0.2.191": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": [
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.27": {
+      "pleme-fleet-0.1.28": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1101,7 +1101,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.190",
+            "package_key": "libc-0.2.191",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1147,7 +1147,7 @@
           },
           {
             "name": "serde_json",
-            "package_key": "serde_json-1.0.151",
+            "package_key": "serde_json-1.0.154",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1167,7 +1167,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.2",
+            "package_key": "tokio-1.53.3",
             "kind": "normal",
             "features": [
               "io-std",
@@ -1187,7 +1187,7 @@
         "runtime_dependencies": [
           {
             "name": "unicode_ident",
-            "package_key": "unicode-ident-1.0.26",
+            "package_key": "unicode-ident-1.0.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1261,7 +1261,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1365,7 +1365,7 @@
           },
           {
             "name": "schemars",
-            "package_key": "schemars-1.2.2",
+            "package_key": "schemars-1.2.3",
             "kind": "normal",
             "features": [
               "chrono04"
@@ -1390,7 +1390,7 @@
           },
           {
             "name": "serde_json",
-            "package_key": "serde_json-1.0.151",
+            "package_key": "serde_json-1.0.154",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1410,7 +1410,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.2",
+            "package_key": "tokio-1.53.3",
             "kind": "normal",
             "features": [
               "macros",
@@ -1425,7 +1425,7 @@
           },
           {
             "name": "tokio_util",
-            "package_key": "tokio-util-0.7.19",
+            "package_key": "tokio-util-0.7.20",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1488,7 +1488,7 @@
           },
           {
             "name": "serde_json",
-            "package_key": "serde_json-1.0.151",
+            "package_key": "serde_json-1.0.154",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1553,7 +1553,7 @@
           },
           {
             "name": "serde_json",
-            "package_key": "serde_json-1.0.151",
+            "package_key": "serde_json-1.0.154",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1569,7 +1569,7 @@
           "schemars_derive"
         ]
       },
-      "schemars-1.2.2": {
+      "schemars-1.2.3": {
         "runtime_dependencies": [
           {
             "name": "chrono04",
@@ -1603,7 +1603,7 @@
           },
           {
             "name": "schemars_derive",
-            "package_key": "schemars_derive-1.2.2",
+            "package_key": "schemars_derive-1.2.3",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1625,7 +1625,7 @@
           },
           {
             "name": "serde_json",
-            "package_key": "serde_json-1.0.151",
+            "package_key": "serde_json-1.0.154",
             "kind": "normal",
             "features": [
               "alloc"
@@ -1693,7 +1693,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "schemars_derive-1.2.2": {
+      "schemars_derive-1.2.3": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1727,7 +1727,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1812,7 +1812,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1897,7 +1897,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1914,7 +1914,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "serde_json-1.0.151": {
+      "serde_json-1.0.154": {
         "runtime_dependencies": [
           {
             "name": "itoa",
@@ -2056,7 +2056,7 @@
           },
           {
             "name": "unicode_ident",
-            "package_key": "unicode-ident-1.0.26",
+            "package_key": "unicode-ident-1.0.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2078,7 +2078,7 @@
           "visit-mut"
         ]
       },
-      "syn-3.0.6": {
+      "syn-3.0.9": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -2102,7 +2102,7 @@
           },
           {
             "name": "unicode_ident",
-            "package_key": "unicode-ident-1.0.26",
+            "package_key": "unicode-ident-1.0.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2168,7 +2168,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2180,7 +2180,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tokio-1.53.2": {
+      "tokio-1.53.3": {
         "runtime_dependencies": [
           {
             "name": "bytes",
@@ -2251,7 +2251,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.6",
+            "package_key": "syn-3.0.9",
             "kind": "normal",
             "features": [
               "full"
@@ -2265,7 +2265,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tokio-util-0.7.19": {
+      "tokio-util-0.7.20": {
         "runtime_dependencies": [
           {
             "name": "bytes",
@@ -2299,7 +2299,7 @@
           },
           {
             "name": "libc",
-            "package_key": "libc-0.2.190",
+            "package_key": "libc-0.2.191",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2319,7 +2319,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.2",
+            "package_key": "tokio-1.53.3",
             "kind": "normal",
             "features": [
               "sync"
@@ -2441,7 +2441,7 @@
           "std"
         ]
       },
-      "unicode-ident-1.0.26": {
+      "unicode-ident-1.0.27": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -2537,7 +2537,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2547,7 +2547,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2632,7 +2632,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2642,7 +2642,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2757,7 +2757,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2767,7 +2767,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2890,7 +2890,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2900,7 +2900,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2985,7 +2985,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2995,7 +2995,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3110,7 +3110,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3120,7 +3120,7 @@
               },
               {
                 "name": "libc",
-                "package_key": "libc-0.2.190",
+                "package_key": "libc-0.2.191",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3250,7 +3250,7 @@
     "dyn-clone-1.0.20": {
       "edition": "2018"
     },
-    "equivalent-1.0.2": {
+    "equivalent-1.0.3": {
       "edition": "2015"
     },
     "errno-0.3.14": {
@@ -3311,7 +3311,7 @@
     "lazy_static-1.5.1": {
       "edition": "2015"
     },
-    "libc-0.2.190": {
+    "libc-0.2.191": {
       "edition": "2021",
       "build_script": "build.rs"
     },
@@ -3335,7 +3335,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.27": {
+    "pleme-fleet-0.1.28": {
       "edition": "2021",
       "binaries": [
         {
@@ -3379,14 +3379,14 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "schemars-1.2.2": {
+    "schemars-1.2.3": {
       "edition": "2021"
     },
     "schemars_derive-0.8.22": {
       "edition": "2021",
       "proc_macro": true
     },
-    "schemars_derive-1.2.2": {
+    "schemars_derive-1.2.3": {
       "edition": "2021",
       "proc_macro": true
     },
@@ -3416,7 +3416,7 @@
         "path": "lib.rs"
       }
     },
-    "serde_json-1.0.151": {
+    "serde_json-1.0.154": {
       "edition": "2021",
       "build_script": "build.rs"
     },
@@ -3432,7 +3432,7 @@
     "syn-2.0.119": {
       "edition": "2021"
     },
-    "syn-3.0.6": {
+    "syn-3.0.9": {
       "edition": "2021"
     },
     "thiserror-2.0.21": {
@@ -3443,14 +3443,14 @@
       "edition": "2021",
       "proc_macro": true
     },
-    "tokio-1.53.2": {
+    "tokio-1.53.3": {
       "edition": "2021"
     },
     "tokio-macros-2.7.2": {
       "edition": "2021",
       "proc_macro": true
     },
-    "tokio-util-0.7.19": {
+    "tokio-util-0.7.20": {
       "edition": "2021"
     },
     "tracing-0.1.44": {
@@ -3463,7 +3463,7 @@
     "tracing-core-0.1.36": {
       "edition": "2018"
     },
-    "unicode-ident-1.0.26": {
+    "unicode-ident-1.0.27": {
       "edition": "2021"
     },
     "unsafe-libyaml-0.2.11": {
