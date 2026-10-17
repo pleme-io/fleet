@@ -91,13 +91,34 @@ fn parse_e2e_report(stdout: &str) -> Option<(String, Vec<E2eRow>)> {
 /// its activation state.
 fn acquire_rebuild_lock() -> Result<Option<File>> {
     // The ONE environment read on this path, at the real entry point.
-    match std::env::var("FLEET_ACTIVATION_LOCK") {
-        Ok(p) if !p.trim().is_empty() => {
-            wait_until_free(Path::new(p.trim()), LockWait::from_env())?;
+    let declared = std::env::var("FLEET_ACTIVATION_LOCK")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| p.trim().to_owned())
+        .or_else(|| {
+            fs::read_to_string(GITOPS_CONFIG)
+                .ok()
+                .and_then(|t| activation_lock_of(&t))
+        });
+    match declared {
+        Some(p) => {
+            wait_until_free(Path::new(&p), LockWait::from_env())?;
             Ok(None)
         }
-        _ => acquire_lock_at(Path::new(REBUILD_LOCK_PATH), LockWait::from_env()).map(Some),
+        None => acquire_lock_at(Path::new(REBUILD_LOCK_PATH), LockWait::from_env()).map(Some),
     }
+}
+
+fn activation_lock_of(gitops_config: &str) -> Option<String> {
+    let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(gitops_config).ok()?;
+    let lock = v.get("switch_lock")?;
+    if lock.get("hold").and_then(serde_yaml_ng::Value::as_bool) != Some(false) {
+        return None;
+    }
+    lock.get("path")
+        .and_then(serde_yaml_ng::Value::as_str)
+        .map(str::to_owned)
+        .filter(|p| !p.is_empty())
 }
 
 fn wait_until_free(lock_path: &Path, wait: LockWait) -> Result<()> {
@@ -2095,6 +2116,20 @@ mod rebuild_lock_tests {
              or two users get two different locks",
             per_user.display()
         );
+    }
+
+    #[test]
+    fn the_activation_lock_is_read_from_the_gitops_config_only_when_it_is_not_held() {
+        let probe = "flake_url: github:o/r\nswitch_lock:\n  path: /var/run/pleme-activation.lock\n  hold: false\n";
+        assert_eq!(
+            activation_lock_of(probe).as_deref(),
+            Some("/var/run/pleme-activation.lock")
+        );
+        let hold = "switch_lock:\n  path: /tmp/fleet-rebuild.lock\n  hold: true\n";
+        assert_eq!(activation_lock_of(hold), None);
+        assert_eq!(activation_lock_of("flake_url: github:o/r\n"), None);
+        assert_eq!(activation_lock_of("switch_lock:\n  hold: false\n"), None);
+        assert_eq!(activation_lock_of(": not yaml ["), None);
     }
 
     #[test]
