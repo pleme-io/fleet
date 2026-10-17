@@ -89,9 +89,40 @@ fn parse_e2e_report(stdout: &str) -> Option<(String, Vec<E2eRow>)> {
 /// on stale/reused PIDs) held for the entire `rebuild()` call means a
 /// second invocation blocks until the first finishes instead of racing
 /// its activation state.
-fn acquire_rebuild_lock() -> Result<File> {
+fn acquire_rebuild_lock() -> Result<Option<File>> {
     // The ONE environment read on this path, at the real entry point.
-    acquire_lock_at(Path::new(REBUILD_LOCK_PATH), LockWait::from_env())
+    match std::env::var("FLEET_ACTIVATION_LOCK") {
+        Ok(p) if !p.trim().is_empty() => {
+            wait_until_free(Path::new(p.trim()), LockWait::from_env())?;
+            Ok(None)
+        }
+        _ => acquire_lock_at(Path::new(REBUILD_LOCK_PATH), LockWait::from_env()).map(Some),
+    }
+}
+
+fn wait_until_free(lock_path: &Path, wait: LockWait) -> Result<()> {
+    let file = match File::open(lock_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!(
+                "failed to read the activation lock at {}",
+                lock_path.display()
+            )));
+        }
+    };
+    if FileExt::try_lock_exclusive(&file).is_err() {
+        log_info(
+            Level::Required,
+            &format!(
+                "An activation is in progress ({}) — waiting for it to finish...",
+                describe_holder(lock_path)
+            ),
+        );
+        wait_for_lock(&file, lock_path, wait)?;
+    }
+    let _ = FileExt::unlock(&file);
+    Ok(())
 }
 
 /// The one machine-wide rebuild lock path.
@@ -2064,6 +2095,24 @@ mod rebuild_lock_tests {
              or two users get two different locks",
             per_user.display()
         );
+    }
+
+    #[test]
+    fn waiting_on_the_activation_lock_holds_nothing_afterwards() {
+        let dir = std::env::temp_dir().join(format!("fleet-activation-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("activation.lock");
+        assert!(wait_until_free(&path, LockWait::Bounded(Duration::from_secs(1))).is_ok());
+        fs::write(&path, "").unwrap();
+        let holder = OpenOptions::new().write(true).open(&path).unwrap();
+        FileExt::lock_exclusive(&holder).unwrap();
+        let busy = wait_until_free(&path, LockWait::Bounded(Duration::from_millis(600)));
+        assert!(busy.is_err(), "a held activation lock must make the caller wait, then give up");
+        FileExt::unlock(&holder).unwrap();
+        assert!(wait_until_free(&path, LockWait::Bounded(Duration::from_secs(1))).is_ok());
+        let next = OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(FileExt::try_lock_exclusive(&next).is_ok(), "the waiter must not keep the lock");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
