@@ -145,6 +145,7 @@ struct Heartbeat {
     head_rev: Option<String>,
     /// The loop's poll interval. Without it staleness cannot be judged.
     poll_seconds: Option<u64>,
+    budget_seconds: Option<u64>,
 }
 
 /// Same budget as `fleet rebuild`'s verdict, `sentinela status --gate` and
@@ -169,7 +170,7 @@ const STALE_AFTER_POLLS: u64 = 3;
 /// So staleness is judged against what the reconciler said it was DOING:
 /// a terminal outcome must be followed by another tick within the poll
 /// budget; a non-terminal one is allowed the build budget below.
-const IN_FLIGHT_OUTCOMES: &[&str] = &["building", "applying", "fetching", "switching"];
+const IN_FLIGHT_OUTCOMES: &[&str] = &["building", "planning", "applying", "fetching", "switching"];
 
 /// Decide a verdict from already-read values. Pure, so every arm is
 /// provable without a node, a clock, or a filesystem.
@@ -404,7 +405,7 @@ pub fn local(
         failures,
         beat.outcome.as_deref(),
         phase,
-        build_budget_secs,
+        beat.budget_seconds.unwrap_or(build_budget_secs),
     );
     let head_rev = beat.head_rev;
     let outcome = beat.outcome;
@@ -1322,5 +1323,22 @@ mod tests {
         // document.
         let hb: Heartbeat = serde_json::from_str("{}").expect("an empty object must parse");
         assert!(hb.at_unix_ms.is_none() && hb.outcome.is_none());
+    }
+
+    #[test]
+    fn a_planning_tick_is_judged_by_the_budget_it_published() {
+        let now = 1_800_000_000;
+        let planning = |age: u64, budget: u64| {
+            format!(
+                "{{\"at_unix_ms\":{},\"outcome\":\"planning\",\"phase\":\"in_flight\",\
+                 \"head_rev\":\"cd136f04e14ea67bae9b53491099c63b88a1d3f6\",\"poll_seconds\":60,\
+                 \"budget_seconds\":{budget}}}",
+                (now - age) * 1000
+            )
+        };
+        let inside = read_back("planning-inside", &planning(400, 600), None, now);
+        assert_ne!(inside.verdict, STOPPED, "{:?}", inside.reason);
+        let past = read_back("planning-past", &planning(700, 600), None, now);
+        assert_eq!(past.verdict, STOPPED, "{:?}", past.reason);
     }
 }
