@@ -109,18 +109,6 @@ fn acquire_rebuild_lock() -> Result<Option<File>> {
     }
 }
 
-fn activation_lock_of(gitops_config: &str) -> Option<String> {
-    let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(gitops_config).ok()?;
-    let lock = v.get("switch_lock")?;
-    if lock.get("hold").and_then(serde_yaml_ng::Value::as_bool) != Some(false) {
-        return None;
-    }
-    lock.get("path")
-        .and_then(serde_yaml_ng::Value::as_str)
-        .map(str::to_owned)
-        .filter(|p| !p.is_empty())
-}
-
 fn wait_until_free(lock_path: &Path, wait: LockWait) -> Result<()> {
     let file = match File::open(lock_path) {
         Ok(f) => f,
@@ -941,9 +929,7 @@ fn prepare_etc_for_darwin() -> Result<()> {
     Ok(())
 }
 
-/// Where the gitops daemon's typed config lives; `sentinela` needs it to
-/// find the receipt chain. Absent on any host not running the loop.
-const GITOPS_CONFIG: &str = "/etc/pleme-gitops/config.yaml";
+use super::gitops_config::{activation_lock_of, PATH as GITOPS_CONFIG};
 
 /// Print the gitops reconciler's verdict before we start rebuilding.
 ///
@@ -2142,11 +2128,17 @@ mod rebuild_lock_tests {
         let holder = OpenOptions::new().write(true).open(&path).unwrap();
         FileExt::lock_exclusive(&holder).unwrap();
         let busy = wait_until_free(&path, LockWait::Bounded(Duration::from_millis(600)));
-        assert!(busy.is_err(), "a held activation lock must make the caller wait, then give up");
+        assert!(
+            busy.is_err(),
+            "a held activation lock must make the caller wait, then give up"
+        );
         FileExt::unlock(&holder).unwrap();
         assert!(wait_until_free(&path, LockWait::Bounded(Duration::from_secs(1))).is_ok());
         let next = OpenOptions::new().write(true).open(&path).unwrap();
-        assert!(FileExt::try_lock_exclusive(&next).is_ok(), "the waiter must not keep the lock");
+        assert!(
+            FileExt::try_lock_exclusive(&next).is_ok(),
+            "the waiter must not keep the lock"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

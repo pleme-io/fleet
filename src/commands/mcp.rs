@@ -73,6 +73,7 @@ impl FleetMcp {
             std::path::Path::new(super::convergence::DEFAULT_STATE_DIR),
             node,
             now,
+            super::gitops_config::build_timeout_seconds(),
         );
         // Serialization failure is reported AS a document rather than as an
         // empty string: a tool that returns nothing is indistinguishable

@@ -5,6 +5,7 @@ pub mod deploy;
 pub mod diff;
 pub mod exec;
 pub mod flow;
+pub mod gitops_config;
 pub mod info;
 pub mod mcp;
 pub mod nix_credential;

@@ -171,17 +171,6 @@ const STALE_AFTER_POLLS: u64 = 3;
 /// budget; a non-terminal one is allowed the build budget below.
 const IN_FLIGHT_OUTCOMES: &[&str] = &["building", "applying", "fetching", "switching"];
 
-/// How long a tick may stay in a non-terminal outcome before it is a hang
-/// rather than a build.
-///
-/// 45 minutes: chosen to exceed a cold full-system rebuild on the slowest
-/// enrolled node, because the cost of the two errors is asymmetric — a
-/// false `stopped` is noise the operator learns to filter, a late `stopped`
-/// costs the difference between 45 minutes and however long until someone
-/// looks. Deliberately NOT derived from the poll interval: how long a build
-/// takes has nothing to do with how often the loop wakes.
-const IN_FLIGHT_BUDGET_SECS: u64 = 45 * 60;
-
 /// Decide a verdict from already-read values. Pure, so every arm is
 /// provable without a node, a clock, or a filesystem.
 ///
@@ -220,6 +209,7 @@ pub fn classify(
     failures: Option<u64>,
     last_outcome: Option<&str>,
     phase: TickPhase,
+    build_budget_secs: u64,
 ) -> (&'static str, Option<String>) {
     // Two DIFFERENT unknowns, and saying the wrong one is the same defect
     // this whole surface exists to remove: an earlier draft reported "no
@@ -250,7 +240,7 @@ pub fn classify(
     let in_flight = phase == TickPhase::InFlight
         || last_outcome.is_some_and(|o| IN_FLIGHT_OUTCOMES.contains(&o));
     let budget = if in_flight {
-        IN_FLIGHT_BUDGET_SECS
+        build_budget_secs
     } else {
         STALE_AFTER_POLLS * poll
     };
@@ -259,7 +249,7 @@ pub fn classify(
             STOPPED,
             Some(if in_flight {
                 format!(
-                    "tick has been `{}` for {age}s, past the {IN_FLIGHT_BUDGET_SECS}s build                      budget — a build this long is a hang, not progress",
+                    "tick has been `{}` for {age}s, past the {build_budget_secs}s build budget — a build this long is a hang, not progress",
                     last_outcome.unwrap_or("?")
                 )
             } else {
@@ -359,7 +349,12 @@ fn short(rev: &str) -> String {
 }
 
 /// Build this node's document from the reconciler's published state.
-pub fn local(state_dir: &Path, node: String, now_epoch: u64) -> NodeConvergence {
+pub fn local(
+    state_dir: &Path,
+    node: String,
+    now_epoch: u64,
+    build_budget_secs: u64,
+) -> NodeConvergence {
     if !state_dir.is_dir() {
         return NodeConvergence {
             node,
@@ -409,6 +404,7 @@ pub fn local(state_dir: &Path, node: String, now_epoch: u64) -> NodeConvergence 
         failures,
         beat.outcome.as_deref(),
         phase,
+        build_budget_secs,
     );
     let head_rev = beat.head_rev;
     let outcome = beat.outcome;
@@ -526,7 +522,12 @@ pub fn convergence(json: bool) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let doc = local(&default_state_dir(), node, now);
+    let doc = local(
+        &default_state_dir(),
+        node,
+        now,
+        super::gitops_config::build_timeout_seconds(),
+    );
 
     if json {
         println!("{}", serde_json::to_string_pretty(&doc)?);
@@ -558,6 +559,7 @@ mod tests {
     use super::*;
 
     const POLL: u64 = 60;
+    const BUDGET: u64 = crate::commands::gitops_config::DEFAULT_BUILD_TIMEOUT_SECONDS;
     const REV: &str = "7176c2181d217e1beec7aa3e5244f620ac26dca7";
     const HEAD: &str = "588cf40f6bc7b603943741a2abd074cfaf2142cd";
 
@@ -578,6 +580,7 @@ mod tests {
             Some(0),
             Some("converged"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, STOPPED);
         assert!(why.unwrap().contains("stopped, not idle"));
@@ -593,6 +596,7 @@ mod tests {
             Some(0),
             Some("converged"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, BEHIND);
         let why = why.unwrap();
@@ -612,6 +616,7 @@ mod tests {
             Some(4136),
             Some("converged"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, FAILING);
         assert!(why.unwrap().contains("4136"));
@@ -629,7 +634,8 @@ mod tests {
                 Some(POLL),
                 Some(0),
                 Some("converged"),
-                DONE
+                DONE,
+                BUDGET,
             )
             .0,
             UNKNOWN
@@ -642,6 +648,7 @@ mod tests {
             Some(0),
             Some("converged"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, UNKNOWN);
         // ...and it must say WHICH unknown. Reporting "no heartbeat" here
@@ -660,6 +667,7 @@ mod tests {
             Some(0),
             Some("converged"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, CONVERGED);
         assert!(why.is_none(), "a converged node needs no excuse");
@@ -673,6 +681,7 @@ mod tests {
             Path::new("/nonexistent/pleme-gitops"),
             "laptop".to_owned(),
             0,
+            BUDGET,
         );
         assert_eq!(doc.verdict, NOT_ENROLLED);
         assert_eq!(doc.engine, "none");
@@ -696,6 +705,7 @@ mod tests {
             Some(0),
             Some("building"),
             DONE,
+            BUDGET,
         );
         assert_ne!(v, STOPPED, "a running build is not a stopped loop: {why:?}");
     }
@@ -713,6 +723,7 @@ mod tests {
             Some(0),
             Some("building"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, UNKNOWN, "in-flight must not claim a result: {why:?}");
         assert!(why.expect("reason").contains("in progress"));
@@ -725,14 +736,42 @@ mod tests {
         let (v, why) = classify(
             Some(REV),
             Some(HEAD),
-            Some(IN_FLIGHT_BUDGET_SECS + 1),
+            Some(BUDGET + 1),
             Some(60),
             Some(0),
             Some("building"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, STOPPED, "a hung build must still be caught");
         assert!(why.expect("reason").contains("hang"));
+    }
+
+    #[test]
+    fn a_build_inside_the_configured_timeout_is_not_stopped() {
+        let (v, _) = classify(
+            Some(REV),
+            Some(HEAD),
+            Some(4137),
+            Some(60),
+            Some(0),
+            Some("building"),
+            TickPhase::InFlight,
+            5400,
+        );
+        assert_ne!(v, STOPPED, "sentinela itself allows this build 5400s");
+        let (v, why) = classify(
+            Some(REV),
+            Some(HEAD),
+            Some(5401),
+            Some(60),
+            Some(0),
+            Some("building"),
+            TickPhase::InFlight,
+            5400,
+        );
+        assert_eq!(v, STOPPED);
+        assert!(why.expect("reason").contains("past the 5400s build budget"));
     }
 
     /// The negative control: widening the budget must NOT weaken the
@@ -748,6 +787,7 @@ mod tests {
             Some(0),
             Some("converged"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, STOPPED, "a finished tick that never recurred is stopped");
     }
@@ -766,6 +806,7 @@ mod tests {
             Some(0),
             Some("frobnicating"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, STOPPED);
     }
@@ -781,7 +822,8 @@ mod tests {
                 Some(POLL),
                 Some(0),
                 Some("converged"),
-                DONE
+                DONE,
+                BUDGET,
             )
             .0,
             CONVERGED
@@ -794,7 +836,8 @@ mod tests {
                 Some(POLL),
                 Some(0),
                 Some("converged"),
-                DONE
+                DONE,
+                BUDGET,
             )
             .0,
             STOPPED
@@ -821,7 +864,7 @@ mod tests {
         if let Some(r) = receipts {
             std::fs::write(dir.join("receipts.json"), r).expect("write receipts");
         }
-        let doc = local(&dir, "rio".to_owned(), now);
+        let doc = local(&dir, "rio".to_owned(), now, BUDGET);
         let _ = std::fs::remove_dir_all(&dir);
         doc
     }
@@ -840,7 +883,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp state dir");
         std::fs::write(dir.join("heartbeat.json"), heartbeat).expect("write heartbeat");
         std::fs::write(dir.join(chain_file), chain).expect("write chain");
-        let doc = local(&dir, "rio".to_owned(), now);
+        let doc = local(&dir, "rio".to_owned(), now, BUDGET);
         let _ = std::fs::remove_dir_all(&dir);
         doc
     }
@@ -914,6 +957,7 @@ mod tests {
             Some(0),
             Some("probeError"),
             DONE,
+            BUDGET,
         );
         assert_eq!(virgin.0, INEFFECTIVE);
         let why = virgin.1.expect("reason");
@@ -927,6 +971,7 @@ mod tests {
             Some(0),
             Some("probeError"),
             DONE,
+            BUDGET,
         );
         assert_eq!(regressed.0, INEFFECTIVE);
         let why = regressed.1.expect("reason");
@@ -952,6 +997,7 @@ mod tests {
             Some(7),
             Some("probeError"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, INEFFECTIVE);
         assert!(
@@ -974,6 +1020,7 @@ mod tests {
             Some(0),
             Some("unchanged"),
             DONE,
+            BUDGET,
         )
         .0;
         let pulsing = classify(
@@ -984,6 +1031,7 @@ mod tests {
             Some(0),
             Some("probeError"),
             DONE,
+            BUDGET,
         )
         .0;
         let dead = classify(
@@ -994,6 +1042,7 @@ mod tests {
             Some(0),
             Some("unchanged"),
             DONE,
+            BUDGET,
         )
         .0;
         assert_eq!((working, pulsing, dead), (CONVERGED, INEFFECTIVE, STOPPED));
@@ -1016,6 +1065,7 @@ mod tests {
                 Some(0),
                 Some(outcome),
                 DONE,
+                BUDGET,
             );
             assert_eq!(v, CONVERGED, "`{outcome}` resolved a head and is at it");
         }
@@ -1036,6 +1086,7 @@ mod tests {
             Some(0),
             Some("building"),
             TickPhase::InFlight,
+            BUDGET,
         );
         assert_eq!(v, UNKNOWN, "a running tick has not failed at anything");
         assert!(why.expect("reason").contains("in progress"));
@@ -1056,6 +1107,7 @@ mod tests {
             Some(0),
             Some("someNewVerb"),
             TickPhase::from_wire(Some("draining")),
+            BUDGET,
         );
         assert_eq!(v, UNKNOWN, "an unreadable phase is not proof of failure");
         assert!(why
@@ -1075,6 +1127,7 @@ mod tests {
             Some(0),
             Some("probeError"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, STOPPED);
     }
@@ -1093,6 +1146,7 @@ mod tests {
             Some(0),
             Some("unchanged"),
             DONE,
+            BUDGET,
         );
         assert_eq!(v, UNKNOWN);
         let why = why.expect("reason");
