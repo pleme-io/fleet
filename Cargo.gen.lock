@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "5eef381a957a9f7c6c6f441e537003bacdce9123c274b3c55d8372d109ae1bc7",
+  "cargo_lock_sha256": "88fa2c19c90b801795c14d44cdee54e5677f380192c7ba166c6f26e3e34fb0a8",
   "manifest_sha256": {
-    "Cargo.toml": "0c31668baff72057fccac3efe7c65236977c52a14a65babd1aca101c44779b48"
+    "Cargo.toml": "a2ab3dff4938338c2bc0de32c825d21ffd73866bb0822778384bad49e946d071"
   },
   "target_resolves": {
     "base": {
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.31": {
+      "pleme-fleet-0.1.32": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1167,7 +1167,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.3",
+            "package_key": "tokio-1.54.1",
             "kind": "normal",
             "features": [
               "io-std",
@@ -1410,7 +1410,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.3",
+            "package_key": "tokio-1.54.1",
             "kind": "normal",
             "features": [
               "macros",
@@ -2180,7 +2180,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tokio-1.53.3": {
+      "tokio-1.54.1": {
         "runtime_dependencies": [
           {
             "name": "bytes",
@@ -2319,7 +2319,7 @@
           },
           {
             "name": "tokio",
-            "package_key": "tokio-1.53.3",
+            "package_key": "tokio-1.54.1",
             "kind": "normal",
             "features": [
               "sync"
@@ -3335,7 +3335,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.31": {
+    "pleme-fleet-0.1.32": {
       "edition": "2021",
       "binaries": [
         {
@@ -3443,7 +3443,7 @@
       "edition": "2021",
       "proc_macro": true
     },
-    "tokio-1.53.3": {
+    "tokio-1.54.1": {
       "edition": "2021"
     },
     "tokio-macros-2.7.2": {
