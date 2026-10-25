@@ -1528,6 +1528,7 @@ pub fn rebuild(
         argv_prefix,
     } = resolve_engine(&flake_root, class, &hostname, token_conf.as_ref())?
     {
+        realize_driver(&flake_root, class, &hostname, &program, token_conf.as_ref())?;
         return sui_rebuild(
             &flake_root,
             &hostname,
@@ -1589,7 +1590,7 @@ fn resolve_engine(
     if over == Override::CppNix {
         return Ok(Engine::CppNix);
     }
-    let mut cmd = Command::new(rebuild_driver("nix"));
+    let mut cmd = Command::new("nix");
     cmd.args(build_engine::probe_args(class, node))
         .current_dir(flake_root);
     forward_access_tokens(&mut cmd, token_conf);
@@ -1616,6 +1617,27 @@ fn resolve_engine(
         &format!("build engine for {node}: {engine:?}"),
     );
     Ok(engine)
+}
+
+fn realize_driver(
+    flake_root: &Path,
+    class: SystemClass,
+    node: &str,
+    program: &str,
+    token_conf: Option<&TokenConfigFile>,
+) -> Result<()> {
+    if !program.starts_with("/nix/store/") || PathBuf::from(program).exists() {
+        return Ok(());
+    }
+    log_info(Level::Required, &format!("realizing {node}'s engine driver {program}"));
+    let mut cmd = Command::new("nix");
+    cmd.args(build_engine::realize_args(class, node)).current_dir(flake_root);
+    forward_access_tokens(&mut cmd, token_conf);
+    let status = cmd.status().context("failed to launch `nix build` for the engine driver")?;
+    if !status.success() || !PathBuf::from(program).exists() {
+        anyhow::bail!("{node}'s engine driver {program} could not be realized (nix build exited {status})");
+    }
+    Ok(())
 }
 
 /// Rebuild with sui: `sudo <driver> <argvPrefix…> switch --flake <root>#<node>`.

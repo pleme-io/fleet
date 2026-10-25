@@ -96,6 +96,20 @@ pub fn probe_args(class: SystemClass, node: &str) -> Vec<String> {
     ]
 }
 
+/// `nix build` of the node's selected engine package, so a store-path driver exists before it runs.
+pub fn realize_args(class: SystemClass, node: &str) -> Vec<String> {
+    vec![
+        "build".into(),
+        "--no-link".into(),
+        "--extra-experimental-features".into(),
+        "nix-command flakes".into(),
+        format!(
+            ".#{}.{node}.config.pleme.buildEngine.package",
+            class.attr_prefix()
+        ),
+    ]
+}
+
 /// Sort a finished probe into found, absent or failed.
 pub fn classify(success: bool, stdout: &str, stderr: &str) -> ProbeOutcome {
     if success {
@@ -170,6 +184,17 @@ mod tests {
         assert_eq!(
             probe_args(SystemClass::Darwin, "ryn").last().unwrap(),
             ".#darwinConfigurations.ryn.config.pleme.buildEngine.driver"
+        );
+    }
+
+    #[test]
+    fn realize_builds_the_nodes_selected_engine_package() {
+        let args = realize_args(SystemClass::Darwin, "cid");
+        assert_eq!(args.first().unwrap(), "build");
+        assert!(args.contains(&"--no-link".to_string()));
+        assert_eq!(
+            args.last().unwrap(),
+            ".#darwinConfigurations.cid.config.pleme.buildEngine.package"
         );
     }
 
