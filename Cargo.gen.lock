@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "8c7c971caa11eb5de3c0d379f4a113948c7d94fcabb4e81b79d4f96b41ef937b",
+  "cargo_lock_sha256": "ff2334e49643b64dfdde892d765e8418adf12abdc4cd26251a9c204a25d47ef9",
   "manifest_sha256": {
-    "Cargo.toml": "8379570414bfbb7296fb4dd14161357f82cd5bba15b29ad2498e3936c42a1dce"
+    "Cargo.toml": "4499e37f3e722435d9f246d46045becd88304267a7173fd1bd7bd1c37d0a84b5"
   },
   "target_resolves": {
     "base": {
@@ -140,7 +140,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -360,7 +360,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "full"
@@ -794,7 +794,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "full"
@@ -990,7 +990,7 @@
           "default"
         ]
       },
-      "itoa-1.0.18": {
+      "itoa-1.0.19": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.33": {
+      "pleme-fleet-0.1.34": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1261,7 +1261,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1727,7 +1727,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1812,7 +1812,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1897,7 +1897,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1918,7 +1918,7 @@
         "runtime_dependencies": [
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1978,7 +1978,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2078,7 +2078,7 @@
           "visit-mut"
         ]
       },
-      "syn-3.0.9": {
+      "syn-3.0.10": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -2168,7 +2168,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2251,7 +2251,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "full"
@@ -3305,7 +3305,7 @@
     "is_terminal_polyfill-1.70.2": {
       "edition": "2021"
     },
-    "itoa-1.0.18": {
+    "itoa-1.0.19": {
       "edition": "2021"
     },
     "lazy_static-1.5.1": {
@@ -3335,7 +3335,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.33": {
+    "pleme-fleet-0.1.34": {
       "edition": "2021",
       "binaries": [
         {
@@ -3432,7 +3432,7 @@
     "syn-2.0.119": {
       "edition": "2021"
     },
-    "syn-3.0.9": {
+    "syn-3.0.10": {
       "edition": "2021"
     },
     "thiserror-2.0.21": {
