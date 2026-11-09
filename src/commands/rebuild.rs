@@ -309,14 +309,14 @@ fn clear_stale_lock(lock_path: &Path) -> Result<()> {
 /// a blocked rebuild waited on `lock_exclusive` **forever**, printed one
 /// line, and never spoke again.
 ///
-/// MEASURED on rio 2026-08-07, which is why this is phase 0b of
-/// `theory/BALIZA.md` and not a nicety: an operator rebuild and the
+/// MEASURED on rio 2026-08-07, which is why this is baliza phase 0b and
+/// not a nicety: an operator rebuild and the
 /// `sentinela` reconciler tick collided; sentinela's tick sat **36 minutes
 /// against a 60-second poll** with its child at zero CPU. Anything that
 /// then reached for this lock would have blocked behind a wedged holder
 /// with no output, no deadline and no way to tell the two apart from the
-/// terminal. A hang must degrade into a **typed failure**
-/// (`theory/RECONCILER-LIVENESS.md` P1), and silence is the part that makes
+/// terminal. A hang must degrade into a **typed failure**, and silence is
+/// the part that makes
 /// a hang expensive — the operator cannot act on what they cannot see.
 ///
 /// So: poll, re-announce the holder every
@@ -326,7 +326,7 @@ fn clear_stale_lock(lock_path: &Path) -> Result<()> {
 /// TIER: only-mitigated. This bounds *our* wait; it does not bound the
 /// holder's work, and a holder that wedges still wedges — it just stops
 /// being invisible and stops being unbounded for everyone behind it.
-/// Bounding the holder is `despacho`'s job (`theory/DESPACHO.md`), where
+/// Bounding the holder is `despacho`'s job, where
 /// the ask carries a mandatory deadline of its own.
 /// `wait` is a VALUE, passed in. It used to be read from the environment right
 /// here, and that is what made the tests race: `std::env` is process-global
@@ -2232,7 +2232,7 @@ mod rebuild_lock_tests {
     /// The bound exists, it fires, and it names who it waited on.
     ///
     /// This is the regression for the 2026-08-07 rio incident
-    /// (`theory/BALIZA.md` phase 0b): the previous code called
+    /// (baliza phase 0b): the previous code called
     /// `FileExt::lock_exclusive`, which blocks FOREVER. A rebuild queued
     /// behind a wedged holder printed one line and never spoke again, and
     /// the operator had no way to tell a healthy long build from a wedge.
