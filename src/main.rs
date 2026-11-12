@@ -5,6 +5,7 @@ use std::path::PathBuf;
 mod commands;
 mod config;
 mod dag;
+mod fd_limit;
 mod fetch_recovery;
 mod flow;
 mod github_token;
@@ -311,6 +312,9 @@ fn settle_output(cli: &Cli, config: &config::FleetConfig) -> output::Level {
 }
 
 fn main() -> std::process::ExitCode {
+    if let Err(e) = fd_limit::raise_to_hard() {
+        eprintln!("fleet: open-file limit left as the session set it: {e}");
+    }
     let cli = Cli::parse();
     let config = load_config();
     let level = settle_output(&cli, &config);
