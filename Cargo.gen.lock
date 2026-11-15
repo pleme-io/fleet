@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "cf9bcda1962ab0c0ce68f13e2f0b3a18d72857e4fa5ea755da3bcd7b68fd34c8",
+  "cargo_lock_sha256": "4c17acff8125f82eb3c2cb11361f408d3d5d99c045b3912b9439b76a7ffda873",
   "manifest_sha256": {
-    "Cargo.toml": "f6cf532508ef92fb8d0412356c2ccfb6e5b0c11498afb9ecb3243866b5a82e7d"
+    "Cargo.toml": "4203509e633fa6eb265787dec2e8b8ccb34cc9e125d2d75cdb64d786dc762ac9"
   },
   "target_resolves": {
     "base": {
@@ -539,7 +539,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "errno-0.3.14": {
+      "errno-0.3.15": {
         "runtime_dependencies": [
           {
             "name": "libc",
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.35": {
+      "pleme-fleet-0.1.36": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -2507,7 +2507,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2517,7 +2517,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2527,7 +2527,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2602,7 +2602,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2612,7 +2612,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2622,7 +2622,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2727,7 +2727,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2737,7 +2737,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2747,7 +2747,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2860,7 +2860,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2870,7 +2870,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2880,7 +2880,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2955,7 +2955,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2965,7 +2965,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2975,7 +2975,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3080,7 +3080,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3090,7 +3090,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3100,7 +3100,7 @@
               },
               {
                 "name": "libc_errno",
-                "package_key": "errno-0.3.14",
+                "package_key": "errno-0.3.15",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -3253,7 +3253,7 @@
     "equivalent-1.0.3": {
       "edition": "2015"
     },
-    "errno-0.3.14": {
+    "errno-0.3.15": {
       "edition": "2018"
     },
     "fs4-0.9.1": {
@@ -3335,7 +3335,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.35": {
+    "pleme-fleet-0.1.36": {
       "edition": "2021",
       "binaries": [
         {
