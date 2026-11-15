@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::build_engine::{self, Engine, Override, SystemClass};
 use super::utils::{
-    log_info, log_success, log_warning, rebuild_timeout, run_command, run_command_output,
+    log_info, log_success, log_warning, rebuild_ceiling, run_command, run_command_output,
     run_command_timed, Level,
 };
 
@@ -1664,7 +1664,7 @@ fn sui_rebuild(
     let mut cmd = Command::new("sudo");
     cmd.args(&argv).current_dir(flake_root);
     forward_access_tokens(&mut cmd, token_conf);
-    run_command_timed(&mut cmd, rebuild_timeout())?;
+    run_command_timed(&mut cmd, rebuild_ceiling())?;
     post_rebuild_cleanup();
     log_success(
         Level::Required,
@@ -1938,7 +1938,7 @@ fn darwin_rebuild(
         }
     }
 
-    run_command_timed(&mut cmd, rebuild_timeout())?;
+    run_command_timed(&mut cmd, rebuild_ceiling())?;
     post_rebuild_cleanup();
     log_success(
         Level::Required,
@@ -1985,7 +1985,7 @@ fn nixos_rebuild(
         }
     }
 
-    run_command_timed(&mut cmd, rebuild_timeout())?;
+    run_command_timed(&mut cmd, rebuild_ceiling())?;
     post_rebuild_cleanup();
     log_success(
         Level::Required,

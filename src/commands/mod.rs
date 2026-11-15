@@ -12,6 +12,7 @@ pub mod nix_credential;
 pub mod pangea;
 pub mod ping;
 pub mod pitr_forge;
+pub mod process_tree;
 pub mod pty_guard;
 pub mod reboot;
 pub mod rebuild;

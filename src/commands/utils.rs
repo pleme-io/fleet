@@ -6,6 +6,8 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::process_tree;
+
 // The level-aware helpers live in `crate::output`; re-exported here so every
 // command module keeps one import path.
 pub use crate::output::{log_error, log_info, log_success, log_warning, Level};
@@ -104,6 +106,7 @@ const CAUSE_FALLBACK_LINES: usize = 15;
 struct LineTail {
     partial: Vec<u8>,
     lines: VecDeque<String>,
+    seen: u64,
 }
 
 impl LineTail {
@@ -128,6 +131,7 @@ impl LineTail {
         if line.trim().is_empty() {
             return;
         }
+        self.seen += 1;
         if self.lines.len() == STDERR_TAIL_LINES {
             self.lines.pop_front();
         }
@@ -282,33 +286,77 @@ fn pipe_ends() -> Result<(Box<dyn Read + Send>, Stdio)> {
     Ok((Box::new(r), Stdio::from(w)))
 }
 
-/// Default wall-clock ceiling for a rebuild. Generous on purpose: a cold
-/// build of a full darwin/NixOS closure legitimately takes a long time, and
-/// killing real work is worse than the hang this guards against.
+/// Default soft ceiling for a rebuild. Past it, a rebuild whose log has
+/// stopped is treated as wedged; one whose log still moves runs on.
 const DEFAULT_REBUILD_TIMEOUT_SECS: u64 = 5400; // 90 min
+const DEFAULT_REBUILD_STALL_SECS: u64 = 1200;
+const DEFAULT_REBUILD_HARD_TIMEOUT_SECS: u64 = 14400;
+const KILL_GRACE: Duration = Duration::from_secs(15);
+const BUILDER_PROBE_EVERY: Duration = Duration::from_secs(30);
 
-/// How long a rebuild may run before it is treated as wedged.
-///
-/// `FLEET_REBUILD_TIMEOUT_SECS=0` disables the guard entirely (back to the
-/// old block-forever behaviour) for the rare genuinely-longer-than-90-minutes
-/// build. Configure-off, not removed.
-pub fn rebuild_timeout() -> Option<Duration> {
-    match std::env::var("FLEET_REBUILD_TIMEOUT_SECS") {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ceiling {
+    pub soft: Duration,
+    pub stall: Duration,
+    pub hard: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Running,
+    Wedged,
+    Exhausted,
+}
+
+impl Ceiling {
+    pub fn verdict(&self, elapsed: Duration, quiet: Duration, building: bool) -> Verdict {
+        if self.hard.is_some_and(|h| elapsed >= h) {
+            return Verdict::Exhausted;
+        }
+        if elapsed >= self.soft && quiet >= self.stall && !building {
+            return Verdict::Wedged;
+        }
+        Verdict::Running
+    }
+}
+
+fn env_secs(name: &str, default: u64) -> Option<Duration> {
+    match std::env::var(name) {
         Ok(v) => match v.trim().parse::<u64>() {
             Ok(0) => None,
             Ok(n) => Some(Duration::from_secs(n)),
             Err(_) => {
-                log_warning(Level::Required, &format!(
-                    "FLEET_REBUILD_TIMEOUT_SECS={v:?} is not a number — using default {DEFAULT_REBUILD_TIMEOUT_SECS}s"
-                ));
-                Some(Duration::from_secs(DEFAULT_REBUILD_TIMEOUT_SECS))
+                log_warning(
+                    Level::Required,
+                    &format!("{name}={v:?} is not a number — using default {default}s"),
+                );
+                Some(Duration::from_secs(default))
             }
         },
-        Err(_) => Some(Duration::from_secs(DEFAULT_REBUILD_TIMEOUT_SECS)),
+        Err(_) => Some(Duration::from_secs(default)),
     }
 }
 
-/// Run a command, failing LOUDLY if it exceeds `timeout` instead of blocking
+/// The rebuild's ceiling. `FLEET_REBUILD_TIMEOUT_SECS=0` disables it
+/// entirely (the old block-forever behaviour); `FLEET_REBUILD_STALL_SECS=0`
+/// restores the elapsed-time-only kill; `FLEET_REBUILD_HARD_TIMEOUT_SECS=0`
+/// lets a still-advancing build run without a hard stop. Configure-off, not
+/// removed.
+pub fn rebuild_ceiling() -> Option<Ceiling> {
+    let soft = env_secs("FLEET_REBUILD_TIMEOUT_SECS", DEFAULT_REBUILD_TIMEOUT_SECS)?;
+    Some(Ceiling {
+        soft,
+        stall: env_secs("FLEET_REBUILD_STALL_SECS", DEFAULT_REBUILD_STALL_SECS)
+            .unwrap_or(Duration::ZERO),
+        hard: env_secs(
+            "FLEET_REBUILD_HARD_TIMEOUT_SECS",
+            DEFAULT_REBUILD_HARD_TIMEOUT_SECS,
+        )
+        .map(|h| h.max(soft)),
+    })
+}
+
+/// Run a command, failing LOUDLY if it is wedged instead of blocking
 /// forever.
 ///
 /// WHY THIS EXISTS (ryn, 2026-07-26): `darwin-rebuild switch` sat for 27
@@ -320,17 +368,16 @@ pub fn rebuild_timeout() -> Option<Duration> {
 /// build parked indefinitely. `run_command` uses `.status()`, which blocks
 /// forever, so the hang propagated all the way up with no diagnostic.
 ///
-/// A wall-clock ceiling cannot distinguish "wedged" from "slow", so it is
-/// deliberately generous. It converts an infinite hang into a loud, actionable
-/// failure — the fleet's own rule: every orchestration step detects, reports
-/// and exits; it never hangs.
-///
-/// The child is placed in its OWN PROCESS GROUP and the whole group is
-/// signalled. That matters here specifically: the thing that wedges is a
-/// GRANDCHILD (`nix build` under `darwin-rebuild` under `sudo`), so killing
-/// only the direct child would orphan the actual hang.
-pub fn run_command_timed(cmd: &mut Command, timeout: Option<Duration>) -> Result<()> {
-    run_command_teed(cmd, timeout, StderrTee::for_this_process())
+/// WHY ELAPSED TIME ALONE IS NOT THE VERDICT (ryn, 2026-11-11): the 5400s
+/// ceiling fired on a build whose log was still advancing (slow relayed cache
+/// pulls), and the group kill missed `darwin-rebuild` and its `nix build`,
+/// which kept ryn's profile 1 h 51 min in. Past the soft ceiling, a rebuild
+/// is wedged only when its log has been quiet for the stall window and no nix
+/// builder runs; a moving build extends itself up to the hard ceiling. The
+/// kill walks every descendant (any process group, any parent after
+/// reparenting), and the result says which pids survived, if any.
+pub fn run_command_timed(cmd: &mut Command, ceiling: Option<Ceiling>) -> Result<()> {
+    run_command_teed(cmd, ceiling, StderrTee::for_this_process())
 }
 
 /// [`run_command_timed`] with the stderr transport chosen by the caller, so
@@ -341,7 +388,7 @@ pub fn run_command_timed(cmd: &mut Command, timeout: Option<Duration>) -> Result
 /// the command's own error instead of an exit code alone.
 pub fn run_command_teed(
     cmd: &mut Command,
-    timeout: Option<Duration>,
+    ceiling: Option<Ceiling>,
     tee: StderrTee,
 ) -> Result<()> {
     #[cfg(unix)]
@@ -386,71 +433,95 @@ pub fn run_command_teed(
 
     let pid = child.id();
     let start = Instant::now();
+    let mut heard = 0u64;
+    let mut last_line = start;
+    let mut probe: Option<(Instant, bool)> = None;
 
     loop {
         if let Some(status) = child.try_wait().context("waiting on child")? {
             return finish(status);
         }
 
-        let Some(timeout) = timeout else {
+        let Some(ceiling) = ceiling else {
             std::thread::sleep(Duration::from_millis(500));
             continue;
         };
-        if start.elapsed() >= timeout {
-            log_error(&format!(
-                "no completion after {}s — treating as wedged and killing process group {pid}",
-                timeout.as_secs()
-            ));
-            kill_group(pid);
-            std::thread::sleep(Duration::from_secs(3));
-            let _ = child.try_wait();
-            kill_group_hard(pid);
-            let _ = child.wait();
-
-            anyhow::bail!(
-                "rebuild exceeded {}s and was killed.\n\
-                 \n\
-                 This is usually a WEDGED flake-input fetch, not a slow build. nix\n\
-                 fetches git inputs in-process via libgit2, which ignores\n\
-                 connect-timeout / stalled-download-timeout / download-attempts, so a\n\
-                 dropped connection parks forever instead of erroring.\n\
-                 \n\
-                 CONFIRM before retrying. The signal is whether the BUILD LOG is\n\
-                 still advancing — NOT cpu%. The `nix build` client sits near 0%%\n\
-                 CPU even on a perfectly healthy build, because the nix-daemon does\n\
-                 the work in separate processes:\n\
-                   a=$(wc -l < <logfile>); sleep 30; b=$(wc -l < <logfile>); echo $((b-a))\n\
-                 Non-zero means it is building and you should raise the ceiling.\n\
-                 Zero, plus no builder children, means it is genuinely wedged:\n\
-                   pgrep -P $(pgrep -x nix-daemon | head -1) | wc -l\n\
-                 \n\
-                 If the build is genuinely this long, raise or disable the ceiling:\n\
-                   FLEET_REBUILD_TIMEOUT_SECS=10800 fleet rebuild   # 3h\n\
-                   FLEET_REBUILD_TIMEOUT_SECS=0     fleet rebuild   # no ceiling",
-                timeout.as_secs()
-            )
+        let seen = tail.lock().map(|t| t.seen).unwrap_or(heard);
+        if seen != heard {
+            heard = seen;
+            last_line = Instant::now();
+        }
+        let elapsed = start.elapsed();
+        let quiet = last_line.elapsed();
+        let building = if elapsed >= ceiling.soft && quiet >= ceiling.stall {
+            let fresh = probe.filter(|(at, _)| at.elapsed() < BUILDER_PROBE_EVERY);
+            let busy = fresh.map(|(_, b)| b).unwrap_or_else(|| {
+                process_tree::snapshot().is_some_and(|p| process_tree::builders_busy(&p))
+            });
+            if fresh.is_none() {
+                probe = Some((Instant::now(), busy));
+            }
+            busy
+        } else {
+            false
+        };
+        let verdict = ceiling.verdict(elapsed, quiet, building);
+        if verdict != Verdict::Running {
+            return Err(stop(&mut child, verdict, &ceiling, quiet));
         }
 
         std::thread::sleep(Duration::from_millis(500));
     }
 }
 
-/// SIGTERM the child's process group (argv form — no shell).
-fn kill_group(pid: u32) {
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-/// SIGKILL the child's process group after the grace period.
-fn kill_group_hard(pid: u32) {
-    let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+fn stop(
+    child: &mut std::process::Child,
+    verdict: Verdict,
+    ceiling: &Ceiling,
+    quiet: Duration,
+) -> anyhow::Error {
+    let pid = child.id();
+    let why = match verdict {
+        Verdict::Exhausted => format!(
+            "reached the {}s hard ceiling (last build-log line {}s ago)",
+            ceiling.hard.unwrap_or(ceiling.soft).as_secs(),
+            quiet.as_secs()
+        ),
+        _ => format!(
+            "wrote no build-log line for {}s, past the {}s ceiling, with no nix builder running — treating as wedged",
+            quiet.as_secs(),
+            ceiling.soft.as_secs()
+        ),
+    };
+    log_error(&format!("rebuild {why}; killing process tree {pid}"));
+    let ended = process_tree::terminate(pid as i32, KILL_GRACE);
+    let _ = child.try_wait();
+    let knobs = "Raise or disable the ceiling:\n  \
+                 FLEET_REBUILD_TIMEOUT_SECS=10800      soft ceiling (0: none)\n  \
+                 FLEET_REBUILD_STALL_SECS=3600         quiet log window (0: elapsed time alone)\n  \
+                 FLEET_REBUILD_HARD_TIMEOUT_SECS=0     hard ceiling for a moving build (0: none)";
+    match ended {
+        process_tree::Ended::Clean => anyhow::anyhow!(
+            "rebuild {why}, and was killed: process {pid} and every descendant are gone.\n\n{knobs}"
+        ),
+        process_tree::Ended::Survivors(alive) => {
+            let rows: Vec<String> = alive
+                .iter()
+                .map(|p| format!("  pid {} {}", p.pid, p.comm))
+                .collect();
+            let pids: Vec<String> = alive.iter().map(|p| p.pid.to_string()).collect();
+            anyhow::anyhow!(
+                "rebuild {why}; the kill did NOT finish, {} process(es) of its tree survive and may still hold the profile:\n{}\nStop them: sudo kill -KILL {}\n\n{knobs}",
+                alive.len(),
+                rows.join("\n"),
+                pids.join(" ")
+            )
+        }
+        process_tree::Ended::Blind => anyhow::anyhow!(
+            "rebuild {why}; ps could not list processes, so the kill of process tree {pid} is UNCONFIRMED. \
+             Check: /bin/ps -axww -o pid,etime,command | grep -e darwin-rebuild -e nixos-rebuild\n\n{knobs}"
+        ),
+    }
 }
 
 pub fn run_command_output(cmd: &mut Command) -> Result<String> {
