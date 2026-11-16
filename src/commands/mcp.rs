@@ -50,7 +50,7 @@ impl FleetMcp {
 
     /// Is this node reconciled with its branch, and when did it last try?
     #[tool(description = "Report this node's GitOps convergence: verdict \
-                       (converged/behind/ineffective/stopped/failing/unknown/\
+                       (converged/behind/ahead/ineffective/stopped/failing/unknown/\
                        notEnrolled), the deployed rev, the branch HEAD the \
                        reconciler last observed, and how long ago it ticked. \
                        Reads state the reconciler published to disk, so it \

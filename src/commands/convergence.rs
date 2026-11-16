@@ -75,6 +75,7 @@ pub const NOT_ENROLLED: &str = "notEnrolled";
 /// hide inside `unknown`. The rule, and the rio incident that produced it,
 /// are on [`classify`].
 pub const INEFFECTIVE: &str = "ineffective";
+pub const AHEAD: &str = "ahead";
 
 /// Whether the pulse reports a tick that FINISHED or one still running.
 ///
@@ -303,6 +304,16 @@ pub fn classify(
             )),
         );
     }
+    if phase == TickPhase::Resolved && last_outcome == Some("ahead") {
+        return (
+            AHEAD,
+            Some(format!(
+                "deployed {} runs ahead of branch HEAD {}; the reconciler holds and does not downgrade",
+                deployed.map_or_else(|| "?".to_owned(), short),
+                head.map_or_else(|| "?".to_owned(), short)
+            )),
+        );
+    }
     if let Some(n) = failures.filter(|n| *n > 0) {
         return (FAILING, Some(format!("{n} consecutive failed ticks")));
     }
@@ -487,11 +498,14 @@ fn read_chain_tail(path: &Path) -> (Option<String>, Option<u64>) {
     // Corrected: remember the `kind:` just seen, and attach the NEXT `rev:`,
     // which in reverse order is that same entry's rev.
     let mut pending_kind: Option<String> = None;
+    let mut held = false;
     for line in raw.lines().rev() {
         let t = line.trim();
         if let Some(k) = t.strip_prefix("kind:") {
             let kind = k.trim().to_owned();
-            if kind != "activated" {
+            if kind == "ahead" {
+                held = true;
+            } else if kind != "activated" && !held {
                 streak += 1;
             }
             pending_kind = Some(kind);
@@ -1055,6 +1069,42 @@ mod tests {
     /// in the fleet — and it publishes a head. A reader that flipped those
     /// to `ineffective` would be wrong on almost every node at once, which
     /// costs exactly what rounding up costs.
+    #[test]
+    fn a_node_ahead_of_its_branch_reads_ahead_not_behind_or_failing() {
+        let (v, why) = classify(
+            Some(REV),
+            Some("80743c30aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some(30),
+            Some(POLL),
+            Some(0),
+            Some("ahead"),
+            DONE,
+            BUDGET,
+        );
+        assert_eq!(v, AHEAD);
+        assert!(why.unwrap().contains("80743c3"));
+    }
+
+    #[test]
+    fn an_ahead_node_with_an_old_failure_streak_reads_ahead_end_to_end() {
+        let now = 1_794_822_740;
+        let beat = format!(
+            "{{\"at_unix_ms\":{},\"outcome\":\"ahead\",\"phase\":\"resolved\",\
+             \"head_rev\":\"80743c30aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"poll_seconds\":60}}",
+            (now - 20) * 1000
+        );
+        let chain = "- seq: 0\n  rev: dd7ce413e25083f9988e5f702538cdafe1d54f4a\n  outcome:\n    kind: activated\n    generation: 7\n\
+- seq: 1\n  rev: 80743c30aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  outcome:\n    kind: failed\n    error: x\n\
+- seq: 2\n  rev: 80743c30aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  outcome:\n    kind: ahead\n    deployed: dd7ce413e25083f9988e5f702538cdafe1d54f4a\n";
+        let doc = read_back_chain_at("ahead", &beat, "receipts.yaml", chain, now);
+        assert_eq!(doc.verdict, AHEAD, "{:?}", doc.reason);
+        assert_eq!(
+            doc.deployed_rev.as_deref(),
+            Some("dd7ce413e25083f9988e5f702538cdafe1d54f4a")
+        );
+        assert_eq!(doc.consecutive_failures, Some(0));
+    }
+
     #[test]
     fn the_healthy_steady_state_is_untouched_by_the_ineffective_rule() {
         for outcome in ["unchanged", "deployed", "deployedBehind"] {
