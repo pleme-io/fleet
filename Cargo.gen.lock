@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "4c17acff8125f82eb3c2cb11361f408d3d5d99c045b3912b9439b76a7ffda873",
+  "cargo_lock_sha256": "75ff317c7e642af7ac7ff5c20572dc62d61eaa0704e7d0cfc662efb082d733ac",
   "manifest_sha256": {
-    "Cargo.toml": "4203509e633fa6eb265787dec2e8b8ccb34cc9e125d2d75cdb64d786dc762ac9"
+    "Cargo.toml": "b2ca80be05b4e0cbb9176a2e8f0995ee44c1e42128a2135570ac141307bb865a"
   },
   "target_resolves": {
     "base": {
@@ -1054,7 +1054,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-fleet-0.1.36": {
+      "pleme-fleet-0.1.37": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -3335,7 +3335,7 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
-    "pleme-fleet-0.1.36": {
+    "pleme-fleet-0.1.37": {
       "edition": "2021",
       "binaries": [
         {
