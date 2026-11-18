@@ -2442,11 +2442,11 @@
         "tatara-lisp": "tatara-lisp"
       },
       "locked": {
-        "lastModified": 1794904075,
-        "narHash": "sha256-vWwa2b76n9iJhDZZ5RTp55ay9buQ3A41AApS+0+e+zA=",
+        "lastModified": 1794982648,
+        "narHash": "sha256-ZfNDhE76m5UnMB+w3TqCmgbEfdIWs+3MDY22ugWh96M=",
         "owner": "pleme-io",
         "repo": "substrate",
-        "rev": "d3fb894532b69e3be3d048b4a5d1f5442b076c12",
+        "rev": "4f17f1ffa850ac01562acd6aacd9aa71ede44525",
         "type": "github"
       },
       "original": {
